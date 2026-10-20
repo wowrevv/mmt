@@ -155,9 +155,32 @@ function ns.AddRole(name)
     for existing in pairs(ns.db.roles) do
         if existing:lower() == name:lower() then return false, "That role already exists." end
     end
-    ns.db.roles[name] = { rules = {} }
+    ns.db.roles[name] = { rules = {}, roll = "NEED" }
     ns.Fire("ROLES_CHANGED")
     return name
+end
+
+local VALID_ROLLS = { NEED = true, GREED = true, PASS = true, MANUAL = true }
+
+function ns.RoleRoll(name)
+    local r = name and ns.db.roles[name]
+    return (r and VALID_ROLLS[r.roll] and r.roll) or "NEED"
+end
+
+function ns.SetRoleRoll(name, roll)
+    local r = name and ns.db.roles[name]
+    if not r or not VALID_ROLLS[roll] then return end
+    r.roll = roll
+    ns.Fire("ROLES_CHANGED")
+end
+
+function ns.SetAllMembersRole(role, on)
+    if not (role and ns.db.roles[role]) then return end
+    for _, m in pairs(ns.db.team) do
+        m.roles = m.roles or {}
+        m.roles[role] = on and true or nil
+    end
+    ns.Fire("TEAM_CHANGED")
 end
 
 function ns.RemoveRole(name)
@@ -384,30 +407,50 @@ function ns.RuleMatches(rule, itemID, name, quality, classID, bindType, subClass
     return false
 end
 
--- Does any rule of the role match the item (link or ID)?
-function ns.RoleWantsItem(roleName, item)
+-- Returns "item" if an explicit item rule matches, "rule" if a category/quality/BoE
+-- rule matches, or nil. Explicit item rules take priority over generic rules.
+function ns.RoleMatchKind(roleName, item)
     local role = ns.db.roles[roleName]
-    if not role then return false end
+    if not role then return nil end
     local itemID = tonumber(tostring(item):match("item:(%d+)") or item)
     local name, _, quality, _, _, _, _, _, _, _, _, classID, subClassID, bindType = ns.ItemInfo(item)
     if not classID then _, classID, subClassID = ns.ItemCategory(item) end
+    local generic = false
     for _, rule in ipairs(role.rules) do
-        if ns.RuleMatches(rule, itemID, name, quality, classID, bindType, subClassID) then return true end
+        if ns.RuleMatches(rule, itemID, name, quality, classID, bindType, subClassID) then
+            if rule.type == "item" then return "item" end
+            generic = true
+        end
     end
-    return false
+    return generic and "rule" or nil
+end
+
+-- Does any rule of the role match the item (link or ID)?
+function ns.RoleWantsItem(roleName, item)
+    return ns.RoleMatchKind(roleName, item) ~= nil
 end
 
 -- Team members whose roles want the item, in team order; plus the matching roles.
+-- Roles set to Pass are excluded here; explicit item rules take priority over generic rules.
 function ns.MembersForItem(item)
+    local tier
+    for _, role in ipairs(ns.SortedRoleNames()) do
+        local kind = ns.RoleMatchKind(role, item)
+        if kind == "item" then tier = "item" break elseif kind == "rule" then tier = "rule" end
+    end
+    if not tier then return {}, {}, nil end
     local keys, roles = {}, {}
     for _, key in ipairs(ns.SortedMembers()) do
+        local pick, passed
         for _, role in ipairs(ns.MemberRoleList(key)) do
-            if ns.RoleWantsItem(role, item) then
-                keys[#keys + 1] = key
-                roles[key] = role
-                break
+            if ns.RoleMatchKind(role, item) == tier then
+                if ns.RoleRoll(role) == "PASS" then passed = true else pick = pick or role end
             end
         end
+        if pick and not passed then
+            keys[#keys + 1] = key
+            roles[key] = pick
+        end
     end
-    return keys, roles
+    return keys, roles, tier
 end

@@ -205,6 +205,7 @@ ns.RegisterPage("roles", "Roles", function(page)
         "When you open a trade with a team member, the items their roles ask for go into the trade window. You still accept the trade yourself. /mmt trade fills it again.")
 
     -- left: roles --------------------------------------------------------
+    local ROLL_TAG = { GREED = "Greed", PASS = "Pass", MANUAL = "Manual" }
     local L = UI.Column(page, 0, top.y, LEFT_W)
     L:Header("Roles")
     local roleList = List(page, LEFT_W, 12, 22, function(parent, i)
@@ -213,11 +214,11 @@ ns.RegisterPage("roles", "Roles", function(page)
         row.sel = UI.Fill(row, A[1], A[2], A[3], 0.18, "BORDER")
         row.name = UI.Label(row, "")
         row.name:SetPoint("LEFT", 8, 0)
-        row.name:SetPoint("RIGHT", -44, 0)
+        row.name:SetPoint("RIGHT", -68, 0)
         row.name:SetJustifyH("LEFT")
         row.name:SetWordWrap(false)
         row.count = UI.Label(row, "")
-        row.count:SetPoint("RIGHT", -26, 0)
+        row.count:SetPoint("RIGHT", -24, 0)
         row.count:SetTextColor(0.5, 0.5, 0.5)
         row.remove = UI.TextButton(row, "x", function() ns.RemoveRole(row.role); ns.Refresh() end)
         row.remove:SetPoint("RIGHT", -2, 0)
@@ -226,7 +227,9 @@ ns.RegisterPage("roles", "Roles", function(page)
     end, function(row, role)
         row.role = role
         row.name:SetText(role)
-        row.count:SetText(ns.MembersWithRole(role))
+        local tag = ROLL_TAG[ns.RoleRoll(role)]
+        local n = ns.MembersWithRole(role)
+        row.count:SetText(tag and (tag .. " · " .. n) or tostring(n))
         row.sel:SetShown(role == selected)
     end)
     L:Add(roleList, 12 * 22 + 6)
@@ -249,6 +252,10 @@ ns.RegisterPage("roles", "Roles", function(page)
     -- right: members & rules ----------------------------------------------
     local R = UI.Column(page, RIGHT_X, top.y, RIGHT_W)
     local membersHeader = R:Header("Members")
+    local noneBtn = UI.TextButton(page, "None", function() if selected then ns.SetAllMembersRole(selected, false) end end, 34)
+    noneBtn:SetPoint("TOPRIGHT", page, "TOPLEFT", RIGHT_X + RIGHT_W, top.y - 4)
+    local allBtn = UI.TextButton(page, "All", function() if selected then ns.SetAllMembersRole(selected, true) end end, 26)
+    allBtn:SetPoint("RIGHT", noneBtn, "LEFT", -2, 0)
     local memberChecks, memberKeys = {}, {}
     local half = RIGHT_W / 2
     for i = 1, 10 do
@@ -264,8 +271,19 @@ ns.RegisterPage("roles", "Roles", function(page)
     noTeam:SetTextColor(0.5, 0.5, 0.5)
     R:Space(5 * 22)
 
+    local rollCycle = UI.Cycle(page, RIGHT_W, "Group loot roll", {
+        { value = "NEED",   text = "Need (role members Need, others Pass)" },
+        { value = "GREED",  text = "Greed (role members Greed, others Pass)" },
+        { value = "PASS",   text = "Pass (role members Pass)" },
+        { value = "MANUAL", text = "Manual (leave roll window open)" },
+    }, function() return selected and ns.RoleRoll(selected) or "NEED" end,
+       function(v) if selected then ns.SetRoleRoll(selected, v) end end)
+    UI.Tooltip(rollCycle, "Group loot roll",
+        "What members of this role roll in Group Loot when an item below drops.\n\n- Need / Greed: role members roll Need (falls back to Greed) or Greed; teammates without the role roll Pass.\n- Pass: members of this role roll Pass (and these items are ignored by trading and Master Looter).\n- Manual: leaves the roll popup open on members of this role.")
+    R:Add(rollCycle, UI.ROW + 2)
+
     local rulesHeader = R:Header("Items")
-    local ruleList = List(page, RIGHT_W, 7, 20, function(parent, i)
+    local ruleList = List(page, RIGHT_W, 6, 20, function(parent, i)
         local row = CreateFrame("Frame", nil, parent)
         RowBackground(row, i)
         row.icon = row:CreateTexture(nil, "ARTWORK")
@@ -287,7 +305,7 @@ ns.RegisterPage("roles", "Roles", function(page)
         row.icon:SetTexture(icon or "Interface\\Buttons\\WHITE8x8")
         if icon then row.icon:SetVertexColor(1, 1, 1) else row.icon:SetVertexColor(0.3, 0.3, 0.3) end
     end)
-    R:Add(ruleList, 7 * 20 + 6)
+    R:Add(ruleList, 6 * 20 + 6)
     local noRules = UI.Label(page, "No items or rules on this role yet.")
     noRules:SetPoint("TOPLEFT", ruleList, "TOPLEFT", 6, -4)
     noRules:SetTextColor(0.5, 0.5, 0.5)
@@ -359,7 +377,10 @@ ns.RegisterPage("roles", "Roles", function(page)
     noRole:SetWidth(RIGHT_W)
     noRole:SetJustifyH("LEFT")
     noRole:SetTextColor(0.5, 0.5, 0.5)
-    local rightSide = { membersHeader, rulesHeader, ruleList, drop, itemInput, itemAdd, grey, boe, qCycle, qAdd, cCycle, cAdd, ruleStatus }
+    local rightSide = { membersHeader, allBtn, noneBtn, rollCycle, rulesHeader, ruleList, drop, itemInput, itemAdd, grey, boe, qCycle, qAdd, cCycle, cAdd, ruleStatus }
+
+    UI.SyncButton(page, "Sync to team", function() ns.SendProfileToTeam() end, "Sync core settings",
+        "Same as /mmt sync: sends your team, roles (including Group Loot roll settings and items), XP window and automations to your group and online team members.")
 
     page.OnRefresh = function()
         local roles = ns.SortedRoleNames()
@@ -371,6 +392,7 @@ ns.RegisterPage("roles", "Roles", function(page)
         noRole:SetShown(selected == nil)
         membersHeader:SetText(selected and ("Members of " .. selected) or "Members")
         rulesHeader:SetText(selected and ("Items for " .. selected) or "Items")
+        rollCycle.Refresh()
 
         local rules = selected and ns.db.roles[selected].rules or {}
         ruleList:Render(rules)

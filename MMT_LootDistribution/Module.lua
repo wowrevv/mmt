@@ -9,9 +9,14 @@
 --    members with that role: the first one in team order who still has more
 --    free bag slots than the reserve. Bind on Pickup items are never given:
 --    they are announced in group chat for manual assignment.
--- 3. Quest items (only the master looter can hand them out on Forever): given
---    round robin across the team, to the next member in team order that the
---    game offers as a candidate (= on the quest and able to receive it).
+-- 3. Quest items (Master Looter): given round robin across the team, to the
+--    next member in team order that the game offers as a candidate (= on the
+--    quest and able to receive it).
+-- 4. Group loot & roll automation: when a loot roll opens (Group Loot, Need
+--    before Greed, token/chest rolls), each client rolls Need, Greed, Pass or
+--    leaves it manual according to your Roles, quest log objectives, bag
+--    reserve and unassigned-item rule, and auto-confirms Bind on Pickup rolls
+--    that MMT initiated.
 
 local _, mod = ...
 local MMT = MMT
@@ -19,23 +24,28 @@ local MMT = MMT
 local M = MMT.NewModule({
     name = "LootDistribution",
     title = "Loot Distribution",
-    description = "Sets the group loot method and gives master loot to team members by their roles.",
+    description = "Sets the group loot method and handles Master Loot and Group Loot rolls by roles.",
     sync = true,   -- /mmt sync <module> and the Sync button share M.db with the team
     defaults = {
         autoMethod   = true,
-        method       = "master",   -- freeforall | roundrobin | master
+        method       = "master",   -- freeforall | roundrobin | group | needbeforegreed | master
         threshold    = 2,          -- item quality (2 = Uncommon)
-        looter       = "LEADER",   -- master looter: "LEADER" or a team key
+        looter       = "LEADER",   -- master looter / group receiver: "LEADER" or a team key
         byRoles      = true,
+        roleMode     = "ALL",      -- Group Loot when several members have the role: ALL | ORDER | RR
         reserve      = 2,          -- free bag slots every member keeps
-        unassigned   = "LEAVE",    -- items no role wants: LEAVE | SELF
-        questRR      = true,       -- quest items round robin across the team
+        unassigned   = "LEAVE",    -- items no role wants: LEAVE | SELF | GREED | NEED | PASS
+        autoRoll     = true,       -- automated Group Loot / roll handling
+        rollBoP      = false,      -- allow generic role rules & unassigned rolls on Bind on Pickup
+        questRR      = true,       -- quest items: round robin (Master) / smart Need or Pass (Group)
         report       = true,
     },
 })
 mod.M = M
 
 local BOP = (Enum and Enum.ItemBind and Enum.ItemBind.OnAcquire) or 1
+local QUEST_BIND = (Enum and Enum.ItemBind and Enum.ItemBind.Quest) or 4
+local QUEST_CLASS = (Enum and Enum.ItemClass and Enum.ItemClass.Questitem) or 12
 local ITEM_SLOT = (Enum and Enum.LootSlotType and Enum.LootSlotType.Item) or 1
 
 ---------------------------------------------------------------------------
@@ -100,6 +110,12 @@ local function IsLeader()
     return IsInGroup() and UnitIsGroupLeader("player")
 end
 
+local function IsMemberActive(key)
+    if MMT.IsSelf(key) then return true end
+    local unit = MMT.UnitForMember(key)
+    return unit ~= nil and UnitIsConnected(unit)
+end
+
 ---------------------------------------------------------------------------
 -- 1. Set the loot method
 ---------------------------------------------------------------------------
@@ -117,6 +133,22 @@ function mod.MasterLooterName()
         if name then return name, key end
     end
     return (UnitName("player")), MMT.PlayerFull()
+end
+
+-- Returns whether this client is the configured looter/receiver, and their team key.
+function mod.TargetLooter()
+    local key = M.db.looter
+    if key ~= "LEADER" and MMT.db.team[key] and IsMemberActive(key) then
+        return MMT.IsSelf(key), key
+    end
+    if IsLeader() then return true, MMT.PlayerFull() end
+    for _, unit in ipairs(MMT.GroupUnits()) do
+        if UnitIsGroupLeader(unit) then
+            local _, _, uKey = MMT.SplitUnit(unit)
+            return false, (uKey and MMT.Resolve(uKey)) or uKey
+        end
+    end
+    return not IsInGroup(), MMT.PlayerFull()
 end
 
 -- force: apply even if this group/leader situation was handled already
@@ -216,7 +248,7 @@ end
 -- free slots, minus what is already planned for you in this loot window
 local function Free(key, planned)
     local free = FreeSlots(key)
-    if free and MMT.IsSelf(key) then free = free - (planned[key] or 0) end
+    if free and planned and MMT.IsSelf(key) then free = free - (planned[key] or 0) end
     return free
 end
 
@@ -488,5 +520,209 @@ M:On("LOOT_CLOSED", function()
     C_Timer.After(0.3, CheckFailed)
 end)
 
+---------------------------------------------------------------------------
+-- 3. Group loot & automated roll handling
+---------------------------------------------------------------------------
+local ROLL_WORD = { [0] = PASS or "Pass", [1] = NEED or "Need", [2] = GREED or "Greed" }
+local CLAIM_RANK = { MANUAL = 3, NEED = 2, GREED = 1 }
+local autoRolls = {}   -- [rollID] = true for rolls initiated by MMT
+local retryRolls = {}  -- [rollID] = attempts
+
+local function DoRoll(rollID, link, action, canNeed, canGreed, reason)
+    if not action or action == "MANUAL" or action == "LEAVE" then return end
+    local num
+    if action == "NEED" then
+        if canNeed then num = 1 elseif canGreed then num = 2 end
+    elseif action == "GREED" then
+        if canGreed then num = 2 end
+    elseif action == "PASS" then
+        num = 0
+    end
+    if num == nil then
+        M:Debug("roll %s on %s skipped: action=%s canNeed=%s canGreed=%s",
+            tostring(rollID), link, action, tostring(canNeed), tostring(canGreed))
+        return
+    end
+    autoRolls[rollID] = true
+    RollOnLoot(rollID, num)
+    M:Debug("RollOnLoot(%s, %d [%s]) %s (%s)", tostring(rollID), num, ROLL_WORD[num], link, tostring(reason or ""))
+    if M.db.report then
+        MMT.Print("%s on %s%s.", ROLL_WORD[num], link, reason and (" (" .. reason .. ")") or "")
+    end
+end
+
+-- Evaluates role rules for a Group Loot item; returns action ("NEED"|"GREED"|"PASS"|"MANUAL"), reason or nil.
+function mod.DecideRoleRoll(link, itemID, isBoP)
+    local cfg = M.db
+    if not cfg.byRoles then return nil end
+
+    -- Explicit item rules ("item") take priority over generic rules ("rule").
+    -- Generic rules only apply to BoP items when cfg.rollBoP is enabled.
+    local tier
+    for _, role in ipairs(MMT.SortedRoleNames()) do
+        local kind = MMT.RoleMatchKind(role, link)
+        if kind == "item" then
+            tier = "item"
+            break
+        elseif kind == "rule" and (not isBoP or cfg.rollBoP) then
+            tier = "rule"
+        end
+    end
+    if not tier then return nil end
+
+    local bestAction, bestRole, passRole = {}, {}, {}
+    local claimers = {}
+    for _, key in ipairs(MMT.SortedMembers()) do
+        if IsMemberActive(key) then
+            for _, role in ipairs(MMT.MemberRoleList(key)) do
+                if MMT.RoleMatchKind(role, link) == tier then
+                    local r = MMT.RoleRoll(role)
+                    if r == "PASS" then
+                        passRole[key] = passRole[key] or role
+                    elseif (CLAIM_RANK[r] or 0) > (CLAIM_RANK[bestAction[key]] or 0) then
+                        bestAction[key], bestRole[key] = r, role
+                    end
+                end
+            end
+            if bestAction[key] and not passRole[key] then
+                claimers[#claimers + 1] = key
+            end
+        end
+    end
+
+    local me = MMT.PlayerFull()
+    if #claimers > 0 then
+        local withSpace = {}
+        for _, key in ipairs(claimers) do
+            local free = Free(key)
+            if bestAction[key] == "MANUAL" or free == nil or free > cfg.reserve then
+                withSpace[#withSpace + 1] = key
+            end
+        end
+        local pool = (#withSpace > 0) and withSpace or claimers
+        local winners = {}
+        if cfg.roleMode == "ORDER" then
+            winners[pool[1]] = true
+        elseif cfg.roleMode == "RR" then
+            M.store.groupRR = M.store.groupRR or {}
+            local last = M.store.groupRR[itemID]
+            local chosen = pool[1]
+            for i, key in ipairs(pool) do
+                if key == last then chosen = pool[(i % #pool) + 1] break end
+            end
+            M.store.groupRR[itemID] = chosen
+            winners[chosen] = true
+        else
+            for _, key in ipairs(pool) do winners[key] = true end
+        end
+
+        if me and winners[me] then
+            return bestAction[me], bestRole[me]
+        end
+        local firstWinner = pool[1]
+        for _, key in ipairs(pool) do if winners[key] then firstWinner = key break end end
+        return "PASS", (bestRole[firstWinner] or "role") .. " -> " .. MMT.FirstName(firstWinner)
+    end
+
+    if me and passRole[me] then
+        return "PASS", passRole[me]
+    end
+    return nil
+end
+
+function mod.EvaluateRoll(rollID)
+    local cfg = M.db
+    if not (M.enabled and cfg and cfg.autoRoll) then return true end
+
+    local _, rollName, _, _, rollBoP, canNeed, canGreed = GetLootRollItemInfo(rollID)
+    local link = GetLootRollItemLink(rollID)
+    if not link then return false end
+
+    local itemName, _, _, _, _, _, _, _, _, _, _, classID, _, bindType = MMT.ItemInfo(link)
+    if not itemName then return false end
+
+    local itemID = ItemID(link)
+    local name = itemName or rollName
+    local isBoP = (bindType == BOP) or (rollBoP == true)
+    local isQuest = (classID == QUEST_CLASS) or (bindType == QUEST_BIND)
+
+    -- 1. Role rules (explicit item rules run ahead of BoP and quest checks)
+    local roleAction, roleReason = mod.DecideRoleRoll(link, itemID, isBoP)
+    if roleAction then
+        DoRoll(rollID, link, roleAction, canNeed, canGreed, roleReason)
+        return true
+    end
+
+    -- 2. Quest items: Need when an objective for this item is open, Pass when finished
+    if isQuest and cfg.questRR then
+        local need = mod.NeedCode(name)
+        if need == "Y" then
+            DoRoll(rollID, link, "NEED", canNeed, canGreed, "quest")
+            return true
+        elseif need == "N" then
+            DoRoll(rollID, link, "PASS", canNeed, canGreed, "quest done")
+            return true
+        end
+    end
+
+    -- 3. Unassigned items (no role matched)
+    if (isBoP and not cfg.rollBoP) or (isQuest and cfg.unassigned ~= "PASS") then
+        return true
+    end
+
+    local u = cfg.unassigned
+    if u == "LEAVE" then
+        return true
+    elseif u == "SELF" then
+        local isMe, looterKey = mod.TargetLooter()
+        local looterFree = looterKey and Free(looterKey)
+        if looterFree ~= nil and looterFree <= cfg.reserve then return true end
+        if isMe then
+            DoRoll(rollID, link, "GREED", canNeed, canGreed, "looter")
+        elseif looterKey then
+            DoRoll(rollID, link, "PASS", canNeed, canGreed, "for " .. MMT.FirstName(looterKey))
+        end
+    elseif u == "GREED" or u == "NEED" then
+        local myFree = Free(MMT.PlayerFull())
+        if myFree ~= nil and myFree <= cfg.reserve then
+            DoRoll(rollID, link, "PASS", canNeed, canGreed, "bag reserve")
+        else
+            DoRoll(rollID, link, u, canNeed, canGreed)
+        end
+    elseif u == "PASS" then
+        DoRoll(rollID, link, "PASS", canNeed, canGreed)
+    end
+    return true
+end
+
+local function RetryRoll(rollID)
+    if not retryRolls[rollID] then return end
+    retryRolls[rollID] = retryRolls[rollID] + 1
+    if mod.EvaluateRoll(rollID) or retryRolls[rollID] >= 150 then
+        retryRolls[rollID] = nil
+        return
+    end
+    C_Timer.After(0.5, function() RetryRoll(rollID) end)
+end
+
+M:On("START_LOOT_ROLL", function(rollID)
+    if mod.EvaluateRoll(rollID) then return end
+    if not retryRolls[rollID] then
+        retryRolls[rollID] = 0
+        C_Timer.After(0.5, function() RetryRoll(rollID) end)
+    end
+end)
+
+M:On("CONFIRM_LOOT_ROLL", function(rollID, rollAction)
+    if not autoRolls[rollID] then return end
+    autoRolls[rollID] = nil
+    ConfirmLootRoll(rollID, rollAction)
+end)
+
+M:On("CANCEL_LOOT_ROLL", function(rollID)
+    autoRolls[rollID] = nil
+    retryRolls[rollID] = nil
+end)
+
 M.OnEnable = function() handledFor = nil; CheckGroup() end
-M.OnDisable = function() busy = false end
+M.OnDisable = function() busy = false; wipe(autoRolls); wipe(retryRolls) end

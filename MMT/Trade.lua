@@ -43,7 +43,14 @@ end
 
 local RuleMatches = function(...) return ns.RuleMatches(...) end
 
-local function CollectItems(rules)
+local function MatchesAny(rules, itemID, name, quality, classID, bindType, subClassID)
+    for _, rule in ipairs(rules) do
+        if RuleMatches(rule, itemID, name, quality, classID, bindType, subClassID) then return true end
+    end
+    return false
+end
+
+local function CollectItems(rules, passRules)
     local result = {}
     for bag = 0, ns.BAGS do
         for slot = 1, (GetNumSlots(bag) or 0) do
@@ -54,11 +61,9 @@ local function CollectItems(rules)
                     local name, _, q, _, _, _, _, _, _, _, _, classID, subClassID, bindType = ns.ItemInfo(link or itemID)
                     if not classID then _, classID, subClassID = ns.ItemCategory(link or itemID) end
                     quality = quality or q
-                    for _, rule in ipairs(rules) do
-                        if RuleMatches(rule, itemID, name, quality, classID, bindType, subClassID) then
-                            result[#result + 1] = { bag = bag, slot = slot, itemID = itemID }
-                            break
-                        end
+                    if MatchesAny(rules, itemID, name, quality, classID, bindType, subClassID)
+                        and not MatchesAny(passRules, itemID, name, quality, classID, bindType, subClassID) then
+                        result[#result + 1] = { bag = bag, slot = slot, itemID = itemID }
                     end
                 end
             end
@@ -102,15 +107,16 @@ function ns.FillTrade(force)
         return
     end
 
-    local rules, roleNames = {}, {}
+    local rules, passRules, roleNames = {}, {}, {}
     for _, role in ipairs(ns.MemberRoleList(partner)) do
-        roleNames[#roleNames + 1] = role
-        for _, rule in ipairs(ns.db.roles[role].rules) do rules[#rules + 1] = rule end
+        local target = (ns.RoleRoll(role) == "PASS") and passRules or rules
+        if target == rules then roleNames[#roleNames + 1] = role end
+        for _, rule in ipairs(ns.db.roles[role].rules) do target[#target + 1] = rule end
     end
     ns.Debug("TRADE roles: %s rules: %d", table.concat(roleNames, ","), #rules)
     if #rules == 0 then return end
 
-    local items = CollectItems(rules)
+    local items = CollectItems(rules, passRules)
     ns.Debug("TRADE matching stacks in bags: %d", #items)
     if #items == 0 then return end
 
