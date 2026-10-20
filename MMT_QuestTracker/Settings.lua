@@ -150,6 +150,9 @@ M.Page = function(_, page)
     local gan, san = Opt("announce")
     L2:Check("Announce quest completion in party chat", gan, san,
         "Posts \"[Quest] is ready for turn-in.\" in party chat when one of your quests becomes ready to turn in.")
+    local gst, sst = Opt("announceStarter")
+    L2:Check("Announce looted items that start a quest", gst, sst,
+        "Posts \"Looted [Item] - it starts a quest!\" in party chat when an item that starts a quest lands in your bags (not if that quest is already in your log). Not in a group: only shown to you.")
     L2:Note("Hold Shift while an NPC page opens to keep that page manual (Core > Automations).")
 
     local R2 = UI.Column(Au, COL2_X, 0, COL_W)
@@ -192,9 +195,9 @@ function M.Report(_, add)
         tostring(mod.OwnHash()), #(mod.ownOrder or {}),
         tostring(_G.ObjectiveTrackerFrame and _G.ObjectiveTrackerFrame:GetParent() and
             (_G.ObjectiveTrackerFrame:GetParent():GetName() or "hidden") or "n/a")))
-    add(("automation: acceptNPC=%s acceptShared=%s turnIn=%s skipTrivial=%s announce=%s autoShare=%s announceNoShare=%s abortTeam=%s"):format(
+    add(("automation: acceptNPC=%s acceptShared=%s turnIn=%s skipTrivial=%s announce=%s autoShare=%s announceNoShare=%s abortTeam=%s announceStarter=%s"):format(
         tostring(M.db.acceptNPC), tostring(M.db.acceptShared), tostring(M.db.turnIn), tostring(M.db.skipTrivial),
-        tostring(M.db.announce), tostring(M.db.autoShare), tostring(M.db.announceNoShare), tostring(M.db.abortTeam)))
+        tostring(M.db.announce), tostring(M.db.autoShare), tostring(M.db.announceNoShare), tostring(M.db.abortTeam), tostring(M.db.announceStarter)))
     for key, rec in pairs(mod.AllData()) do
         add(("quests %s: %d, hash %s, %s"):format(MMT.Repr(key), mod.QuestCount(rec), tostring(rec.hash), MMT.Ago(rec.time)))
     end

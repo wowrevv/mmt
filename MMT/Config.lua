@@ -1,12 +1,17 @@
 -- MMT: configuration window (/mmt).
 -- Navigation: CORE pages (always on), then MODULES: one entry per installed
--- module (greyed out when switched off) and "Manage modules".
+-- module (greyed out when switched off) and "Manage modules". At most 16
+-- entries are visible; the mouse wheel scrolls; clicking CORE or MODULES
+-- collapses / expands that section.
 
 local _, ns = ...
 local UI = ns.UI
 local A = UI.ACCENT
 
 local WIDTH, HEIGHT, NAV = 700, 620, 150
+local NAV_ROWS = 16                                     -- page entries visible at once
+local NAV_ROW, NAV_HEAD, NAV_TOP = 26, 22, -58
+local NAV_VIEW = NAV_ROWS * NAV_ROW + 2 * NAV_HEAD      -- height of the page list
 local SCALE_MIN, SCALE_MAX, SCALE_STEP = 0.6, 2.0, 0.05
 local window
 local pages, coreOrder = {}, {}
@@ -95,6 +100,7 @@ local function Select(key)
     window.pageTitle:SetText(pages[key].title)
     RefreshPage(pages[key])
     RefreshNav()
+    if window.ShowInNav then window.ShowInNav(key) end
 end
 
 ---------------------------------------------------------------------------
@@ -133,12 +139,6 @@ local function Tab(parent, title, target, isOn)
     return b
 end
 
-local function SectionLabel(parent, text, y)
-    local fs = UI.Label(parent, text)
-    fs:SetPoint("TOPLEFT", 16, y)
-    fs:SetTextColor(A[1], A[2], A[3], 0.8)
-    return fs
-end
 
 local function Build()
     RegisterModulePages()
@@ -170,40 +170,156 @@ local function Build()
     divider:SetPoint("BOTTOMLEFT", nav, "BOTTOMRIGHT")
     divider:SetWidth(1)
 
+    -- logo: Interface\AddOns\MMT\Media\Logo.tga (128x128, transparent)
+    local logo = nav:CreateTexture(nil, "ARTWORK")
+    logo:SetSize(36, 36)
+    logo:SetPoint("TOPLEFT", 10, -8)
+    logo:SetTexture(ns.LOGO)
     local title = UI.Label(nav, "MMT", "GameFontNormalLarge")
-    title:SetPoint("TOPLEFT", 16, -14)
+    title:SetPoint("TOPLEFT", 50, -14)
     title:SetTextColor(A[1], A[2], A[3])
     local sub = UI.Label(nav, "Manage My Team")
     sub:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -2)
     sub:SetTextColor(0.6, 0.6, 0.6)
 
-    local y = -58
-    SectionLabel(nav, "CORE", y)
-    y = y - 16
-    for _, key in ipairs(coreOrder) do
-        local tab = Tab(nav, pages[key].title, key)
-        tab:SetPoint("TOPLEFT", 0, y)
+    -- page list: at most NAV_ROWS entries visible, mouse wheel scrolls,
+    -- CORE / MODULES collapse and expand (remembered per account)
+    local items = {}
+    local function Item(kind, section, frame, height)
+        items[#items + 1] = { kind = kind, section = section, frame = frame, height = height }
+    end
+    local function Collapsed(section)
+        return MMTDB.navCollapsed and MMTDB.navCollapsed[section] or false
+    end
+    local LayoutNav
+    local function Header(text, section)
+        local b = CreateFrame("Button", nil, nav)
+        b:SetSize(NAV, NAV_HEAD)
+        local label = UI.Label(b, text)
+        label:SetPoint("LEFT", 16, -2)
+        label:SetTextColor(A[1], A[2], A[3], 0.8)
+        local sign = UI.Label(b, "")
+        sign:SetPoint("RIGHT", -12, -2)
+        sign:SetTextColor(A[1], A[2], A[3], 0.8)
+        local hl = b:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints(); hl:SetColorTexture(1, 1, 1, 0.03)
+        b.Update = function() sign:SetText(Collapsed(section) and "+" or "-") end
+        b:SetScript("OnClick", function()
+            MMTDB.navCollapsed = MMTDB.navCollapsed or {}
+            MMTDB.navCollapsed[section] = not Collapsed(section) or nil
+            LayoutNav()
+        end)
+        w.tabs[#w.tabs + 1] = b
+        Item("head", section, b, NAV_HEAD)
+    end
+    local function AddTab(tab, section, target)
+        tab.target = target
         w.tabs[#w.tabs + 1] = tab
-        y = y - 26
+        Item("tab", section, tab, NAV_ROW)
     end
 
-    y = y - 12
-    SectionLabel(nav, "MODULES", y)
-    y = y - 16
+    Header("CORE", "core")
+    for _, key in ipairs(coreOrder) do AddTab(Tab(nav, pages[key].title, key), "core", key) end
+    Header("MODULES", "modules")
     for _, entry in ipairs(ns.InstalledModules()) do
         local m = entry.module
         local target = (m and pages["mod:" .. m.name]) and ("mod:" .. m.name) or "modules"
-        local tab = Tab(nav, entry.title, target, function()
+        AddTab(Tab(nav, entry.title, target, function()
             if m then return m.enabled end
             return false
-        end)
-        tab:SetPoint("TOPLEFT", 0, y)
-        w.tabs[#w.tabs + 1] = tab
-        y = y - 26
+        end), "modules", target)
     end
-    local manage = Tab(nav, "Manage modules", "modules")
-    manage:SetPoint("TOPLEFT", 0, y)
-    w.tabs[#w.tabs + 1] = manage
+    AddTab(Tab(nav, "Manage modules", "modules"), "modules", "modules")
+
+    -- scroll position marker (only when the list is longer than the view)
+    local track = nav:CreateTexture(nil, "ARTWORK")
+    track:SetColorTexture(1, 1, 1, 0.05)
+    track:SetWidth(2)
+    track:SetPoint("TOPRIGHT", nav, "TOPRIGHT", -2, NAV_TOP)
+    track:SetHeight(NAV_VIEW)
+    local thumb = nav:CreateTexture(nil, "OVERLAY")
+    thumb:SetColorTexture(A[1], A[2], A[3], 0.6)
+    thumb:SetWidth(2)
+
+    local offset = 0   -- entries scrolled away at the top
+    local function Visible()
+        local list = {}
+        for _, it in ipairs(items) do
+            if it.kind == "head" or not Collapsed(it.section) then list[#list + 1] = it
+            else it.frame:Hide() end
+        end
+        return list
+    end
+    -- entries after `from` that fit: at most NAV_ROWS pages and the view height
+    local function Fit(list, from)
+        local used, tabs, last = 0, 0, from
+        for i = from + 1, #list do
+            local it = list[i]
+            if used + it.height > NAV_VIEW or (it.kind == "tab" and tabs >= NAV_ROWS) then break end
+            used = used + it.height
+            if it.kind == "tab" then tabs = tabs + 1 end
+            last = i
+        end
+        return last
+    end
+    -- smallest offset that shows the last entry
+    local function MaxOffset(list)
+        for k = 0, #list do
+            if Fit(list, k) >= #list then return k end
+        end
+        return #list
+    end
+    LayoutNav = function()
+        local list = Visible()
+        local maxOffset = MaxOffset(list)
+        offset = math.max(0, math.min(offset, maxOffset))
+        local last = Fit(list, offset)
+        local y = NAV_TOP
+        for i, it in ipairs(list) do
+            if i > offset and i <= last then
+                it.frame:ClearAllPoints()
+                it.frame:SetPoint("TOPLEFT", nav, "TOPLEFT", 0, y)
+                it.frame:Show()
+                y = y - it.height
+            else
+                it.frame:Hide()
+            end
+            if it.frame.Update then it.frame.Update() end
+        end
+        local scrolls = maxOffset > 0
+        track:SetShown(scrolls)
+        thumb:SetShown(scrolls)
+        if scrolls then
+            local n = #list
+            local size = math.max(16, NAV_VIEW * (n - maxOffset) / n)
+            thumb:SetHeight(size)
+            thumb:ClearAllPoints()
+            thumb:SetPoint("TOPRIGHT", nav, "TOPRIGHT", -2, NAV_TOP - (NAV_VIEW - size) * offset / maxOffset)
+        end
+    end
+    -- scroll so the tab of a page is in view (its section must be open)
+    w.ShowInNav = function(key)
+        local list = Visible()
+        for i, it in ipairs(list) do
+            if it.kind == "tab" and it.frame.target == key then
+                if i <= offset then
+                    offset = i - 1
+                    if offset > 0 and list[offset].kind == "head" then offset = offset - 1 end   -- with its section title
+                else
+                    while Fit(list, offset) < i and offset < i - 1 do offset = offset + 1 end
+                end
+                break
+            end
+        end
+        LayoutNav()
+    end
+    nav:EnableMouseWheel(true)
+    nav:SetScript("OnMouseWheel", function(_, delta)
+        offset = offset - delta
+        LayoutNav()
+    end)
+    w.LayoutNav = LayoutNav
+    LayoutNav()
 
     -- footer: window scale and version (debug tools are on the Help page)
     nav.widgets = {}
@@ -297,8 +413,12 @@ end
 ns.OnLogin(function()
     if not (Settings and Settings.RegisterCanvasLayoutCategory) then return end
     local panel = CreateFrame("Frame")
+    local logo = panel:CreateTexture(nil, "ARTWORK")
+    logo:SetSize(48, 48)
+    logo:SetPoint("TOPLEFT", 12, -10)
+    logo:SetTexture(ns.LOGO)
     local t = UI.Label(panel, "MMT - Manage My Team", "GameFontNormalLarge")
-    t:SetPoint("TOPLEFT", 16, -16)
+    t:SetPoint("TOPLEFT", 68, -22)
     -- opens MMT on top of the game options (closing Blizzard's panel from addon code would taint it)
     local open = UI.Button(panel, 160, "Open settings", function()
         window = window or Build()
@@ -348,6 +468,14 @@ SlashCmdList.MMT = function(msg)
         ns.ToggleConfig("modules")
     elseif cmd == "help" then
         ns.ToggleConfig("help")
+    elseif cmd == "leader" or cmd == "ftl" then
+        if not ns.db.ftl.enabled then ns.Print("FTL is switched off (/mmt > FTL).") return end
+        if arg == "" then
+            ns.ClaimFTLLeader()
+        else
+            local key = ns.IsSelf(arg) and ns.PlayerFull() or ns.Resolve(arg) or ns.Resolve((arg:gsub("%s+", "-")))
+            if key then ns.SetFTLLeader(key) else ns.Print("%s is not in your team.", arg) end
+        end
     elseif cmd == "scale" then
         local pct = tonumber((arg or ""):match("^(%d+)"))
         if pct then
@@ -374,7 +502,43 @@ SlashCmdList.MMT = function(msg)
         ns.Print("/mmt modules - show installed modules")
         ns.Print("/mmt help - debug tools and guides for writing modules")
         ns.Print("/mmt debug - debug tools (on, off, dump, log, clear, chat, name <text>)")
+        ns.Print("/mmt leader [name] - make this character (or <name>) the FTL leader")
+        if ns.jambaCommand then ns.Print("/jamba-team iammaster all - same as /mmt leader (Jamba isn't loaded)") end
         ns.Print("/mmt scale <percent> - size of the settings window (e.g. 130)")
         ns.Print("/mmt reset - reset the active profile")
     end
 end
+
+---------------------------------------------------------------------------
+-- Jamba compatibility: without Jamba, "/jamba-team iammaster all" (from old
+-- Jamba macros and key setups) does the same as /mmt leader.
+---------------------------------------------------------------------------
+local function JambaLoaded()
+    local A = C_AddOns or {}
+    local num = A.GetNumAddOns or GetNumAddOns
+    local info = A.GetAddOnInfo or GetAddOnInfo
+    local loaded = A.IsAddOnLoaded or IsAddOnLoaded
+    if not (num and info and loaded) then return false end
+    for i = 1, num() do
+        local name = info(i)
+        if type(name) == "string" and name:lower():find("^jamba") and loaded(name) then return true end
+    end
+    return false
+end
+
+ns.OnLogin(function()
+    if JambaLoaded() then
+        ns.Debug("Jamba is loaded: /jamba-team stays Jamba's")
+        return
+    end
+    ns.jambaCommand = true
+    SLASH_MMTJAMBATEAM1 = "/jamba-team"
+    SlashCmdList.MMTJAMBATEAM = function(msg)
+        local cmd = (ns.Trim(msg or ""):match("^(%S*)") or ""):lower()
+        if cmd == "iammaster" then
+            SlashCmdList.MMT("leader")
+        else
+            ns.Print("Of /jamba-team, MMT only knows \"iammaster all\": it makes this character the FTL leader (/mmt leader).")
+        end
+    end
+end)

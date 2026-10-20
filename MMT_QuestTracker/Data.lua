@@ -192,9 +192,9 @@ local function SendChunks(payload, target)
     local total = math.max(1, math.ceil(#payload / CHUNK))
     for i = 1, total do
         local msg = ("QTS:%s:%d:%d:%s"):format(id, i, total, payload:sub((i - 1) * CHUNK + 1, i * CHUNK))
-        C_Timer.After((i - 1) * 0.2, function()
-            if target then MMT.SendAddon(msg, "WHISPER", target) else MMT.SendToTeam(msg, true) end
-        end)
+        -- the core queue paces the parts (bulk prefix, low priority)
+        if target then MMT.SendAddon(msg, "WHISPER", target, "BULK", nil, MMT.bulkPrefix)
+        else MMT.SendToTeam(msg, true, "BULK", MMT.bulkPrefix) end
     end
 end
 

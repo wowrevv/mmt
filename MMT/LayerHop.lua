@@ -11,7 +11,8 @@
 -- signals are watched as a fallback, and with the debug log on every event
 -- name containing SHARD, LAYER or TRANSFER is logged.
 --
--- The team sees each other's pending hops (LH:1 / LH:0); clicking a
+-- The team sees each other's pending hops (LH:1 / LH:0) and countdowns
+-- (LHC:<seconds>, LHC:0 = stopped) in the XP window; clicking a
 -- teammate's "Layer Hop" asks that client to confirm (LHGO).
 
 local _, ns = ...
@@ -34,12 +35,31 @@ local function Confirm()
     return ok
 end
 
+ns.hopRemote = {}     -- [teamKey] = true while that member has a hop pending (LH:1 / LH:0)
+ns.hopRemoteEnd = {}  -- [teamKey] = GetTime() when that member's countdown ends (LHC:<seconds>)
+
+local function SendCountdown(seconds)
+    if ns.SendAlert then ns.SendAlert("LHC:" .. seconds) end   -- leader first
+end
+
 function ns.CancelHopCountdown(reason)
     if countdown then
         countdown:Cancel()
         countdown = nil
+        ns.hop.countdownEnd = nil
+        SendCountdown(0)
         if reason then ns.Print("Layer hop countdown stopped (%s).", reason) end
+        ns.Fire("STATUS_CHANGED")
     end
+end
+
+-- seconds left of the running countdown of a member (you or a teammate), or nil
+function ns.HopCountdownFor(key)
+    local endTime
+    if ns.IsSelf(key) then endTime = ns.hop.countdownEnd else endTime = ns.hopRemoteEnd[key] end
+    if not endTime then return nil end
+    local left = math.ceil(endTime - GetTime())
+    return left > 0 and left or nil
 end
 
 -- seconds: delay; why: "auto", "manual" or "requested by <name>"
@@ -47,20 +67,27 @@ function ns.StartHopCountdown(seconds, why)
     ns.CancelHopCountdown()
     seconds = math.max(1, math.floor(seconds + 0.5))
     ns.Print("Layer hop in %d s (%s)...", seconds, why)
+    ns.hop.countdownEnd = GetTime() + seconds
+    SendCountdown(seconds)   -- the team's XP windows count down too
     ns.Fire("STATUS_CHANGED")
     local left = seconds
     countdown = C_Timer.NewTicker(1, function(self)
         left = left - 1
         if not ns.hop.pending then
             self:Cancel(); countdown = nil
+            ns.hop.countdownEnd = nil
+            SendCountdown(0)
             ns.Print("Layer hop cancelled: the game no longer offers it.")
+            ns.Fire("STATUS_CHANGED")
             return
         end
         if left > 0 then
             ns.Print("Layer hop in %d...", left)
+            ns.Fire("STATUS_CHANGED")
         else
             self:Cancel(); countdown = nil
-            if Confirm() then ns.SetHopPending(false, "confirmed") else ns.Fire("STATUS_CHANGED") end
+            ns.hop.countdownEnd = nil
+            if Confirm() then ns.SetHopPending(false, "confirmed") else SendCountdown(0); ns.Fire("STATUS_CHANGED") end
         end
     end)
 end
@@ -88,7 +115,7 @@ function ns.SetHopPending(on, source)
     else
         ns.CancelHopCountdown(source ~= "confirmed" and "the game no longer offers it" or nil)
     end
-    if ns.SendToTeam then ns.SendToTeam(on and "LH:1" or "LH:0", true) end
+    if ns.SendAlert then ns.SendAlert(on and "LH:1" or "LH:0") end   -- leader first
     ns.Fire("STATUS_CHANGED")
 end
 
@@ -99,16 +126,28 @@ function ns.HopClicked(key)
         return
     end
     -- a teammate's hop: ask that client to confirm it
-    ns.SendAddon("LHGO", "WHISPER", ns.WhisperTarget(key))
+    ns.SendAddon("LHGO", "WHISPER", ns.WhisperTarget(key), "ALERT")
     ns.Print("Asked %s to take the layer hop.", ns.FullDisplay(key))
 end
 
 ns.Listen("TEAM_MESSAGE", function(key, sender, text)
     local flag = text:match("^LH:([01])$")
+    local cd = text:match("^LHC:(%d+)$")
     if flag then
-        local s = ns.status[key]
-        if s then s.hop = (flag == "1") end
+        ns.hopRemote[key] = (flag == "1") or nil
+        if flag == "0" then ns.hopRemoteEnd[key] = nil end
         ns.Fire("STATUS_CHANGED")
+    elseif cd then
+        cd = tonumber(cd)
+        ns.hopRemoteEnd[key] = (cd > 0) and (GetTime() + cd) or nil
+        if cd > 0 then ns.hopRemote[key] = true end
+        ns.Fire("STATUS_CHANGED")
+        -- redraw every second while a teammate's countdown runs
+        if cd > 0 then
+            for i = 1, cd + 1 do
+                C_Timer.After(i, function() ns.Fire("STATUS_CHANGED") end)
+            end
+        end
     elseif text == "LHGO" and ns.hop.pending then
         ns.StartHopCountdown(MANUAL_DELAY, "requested by " .. ns.FullDisplay(key))
     end
@@ -116,8 +155,7 @@ end)
 
 function ns.HopPendingFor(key)
     if ns.IsSelf(key) then return ns.hop.pending end
-    local s = ns.status[key]
-    return s and s.hop and ns.IsOnline(key) or false
+    return ns.hopRemote[key] and ns.IsOnline(key) or false
 end
 
 ---------------------------------------------------------------------------

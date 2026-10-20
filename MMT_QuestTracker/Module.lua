@@ -31,6 +31,7 @@ local M = MMT.NewModule({
         autoShare       = true,   -- share newly accepted quests with the group
         announceNoShare = true,   -- "[Quest] can't be shared." in party chat
         abortTeam       = true,   -- abandoning asks to abandon on the whole team
+        announceStarter = true,   -- "Looted [Item] - it starts a quest!" in party chat
 
         -- tracker
         show          = true,

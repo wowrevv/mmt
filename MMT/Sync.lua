@@ -7,13 +7,13 @@
 --                        /mmt sync questtracker. Modules opt in with
 --                        sync = true; see Modules.lua for the module API.
 --
--- Why a send queue: the game allows a short burst of about 10 addon messages
--- per prefix and then roughly one per second. Everything above that is
--- dropped with "AddonMessageThrottle" (result 3), so a profile sent at five
--- messages per second never arrived completely. Messages now go out paced,
--- and a throttled message is sent again instead of being lost.
+-- Sending goes through the core's send queue (Comm.lua): the parts use the
+-- bulk prefix "MMTB" at low priority, outside instances by whisper to each
+-- recipient (not throttled there), inside instances to the group. A throttled
+-- message is sent again instead of being lost. Answers (SYNCACK) use the
+-- normal prefix at high priority.
 --
--- Messages (all under the "MMT" prefix):
+-- Messages:
 --   SYNCHI:<id>:<parts>:<kind>:<label>   announces a transfer (kind: core | mod:<Name>)
 --   SYNC:<id>:<i>:<parts>:<chunk>        payload parts (same format as MMT 0.6.3)
 --   SYNCACK:<id>:<status>                answer of a recipient:
@@ -25,11 +25,6 @@
 local _, ns = ...
 
 local CHUNK      = 225   -- payload bytes per message (whole message stays under 255)
-local BURST      = 3     -- messages sent quickly at the start
-local BURST_GAP  = 0.25
-local GAP        = 1.2   -- seconds between messages after the burst
-local RETRY_GAP  = 1.5   -- after "throttled"
-local MAX_TRIES  = 8
 local RECV_TIMEOUT = 25  -- recipient: seconds without a new part = incomplete
 local ACK_TIMEOUT  = 20  -- sender: seconds after the last part to wait for answers
 
@@ -40,47 +35,15 @@ local BAD = "|cffff6666"
 local function Name(s) return HL .. s .. "|r" end
 
 ---------------------------------------------------------------------------
--- Paced send queue
+-- Sending through the core queue
 ---------------------------------------------------------------------------
-local outbox = {}
-local pumping = false
-local burstLeft = BURST
-
-local function IsThrottled(res) return res == 3 or res == 7 end
-local function IsSuccess(res) return res == 0 or res == true or res == nil end
-
-local function Pump()
-    local item = outbox[1]
-    if not item then
-        pumping = false
-        burstLeft = BURST
-        return
-    end
-    local res = ns.SendAddon(item.msg, item.channel, item.target)
-    if IsThrottled(res) then
-        item.tries = (item.tries or 0) + 1
-        if item.tries < MAX_TRIES then
-            burstLeft = 0
-            C_Timer.After(RETRY_GAP, Pump)
-            return
-        end
-    end
-    table.remove(outbox, 1)
-    if item.done then pcall(item.done, IsSuccess(res)) end
-    local delay = GAP
-    if burstLeft > 0 then
-        burstLeft = burstLeft - 1
-        delay = BURST_GAP
-    end
-    C_Timer.After(delay, Pump)
+-- parts and announcements: bulk prefix, low priority; answers: high priority
+local function Queue(msg, channel, target, done)
+    ns.SendAddon(msg, channel, target, "BULK", done and function(ok) done(ok) end, ns.bulkPrefix)
 end
 
-local function Queue(msg, channel, target, done)
-    outbox[#outbox + 1] = { msg = msg, channel = channel, target = target, done = done }
-    if not pumping then
-        pumping = true
-        C_Timer.After(0, Pump)
-    end
+local function QueueAnswer(msg, channel, target)
+    ns.SendAddon(msg, channel, target, "ALERT")
 end
 
 ---------------------------------------------------------------------------
@@ -168,15 +131,19 @@ local function Start(kind, label, payload)
     -- recipients: party/raid members, plus online team members outside the group
     local channel = GroupChannel()
     local expected, order = {}, {}
+    local whisperName = {}   -- [nk] = name to whisper
     if channel then
-        for nk, name in pairs(GroupMembers()) do expected[nk] = name end
+        for nk, name in pairs(GroupMembers()) do expected[nk] = name; whisperName[nk] = name end
     end
     local whisper = {}
     for key in pairs(ns.db.team) do
         if not ns.IsSelf(key) then
             local nk = ns.NormKey(key)
-            if not expected[nk] and ns.IsOnline(key) then
+            if expected[nk] then
+                whisperName[nk] = ns.WhisperTarget(key)
+            elseif ns.IsOnline(key) then
                 expected[nk] = ns.FullDisplay(key)
+                whisperName[nk] = ns.WhisperTarget(key)
                 whisper[#whisper + 1] = key
             end
         end
@@ -191,9 +158,16 @@ local function Start(kind, label, payload)
 
     local id = tostring(math.random(100000, 999999))
     local parts = math.ceil(#payload / CHUNK)
+    -- outside instances every recipient gets whispers (not throttled there);
+    -- inside, one copy to the group plus whispers for those outside it
     local targets = {}
-    if channel then targets[#targets + 1] = { channel = channel } end
-    for _, key in ipairs(whisper) do targets[#targets + 1] = { channel = "WHISPER", target = ns.WhisperTarget(key) } end
+    local inInstance = IsInInstance and IsInInstance()
+    if inInstance and channel then
+        targets[#targets + 1] = { channel = channel }
+        for _, key in ipairs(whisper) do targets[#targets + 1] = { channel = "WHISPER", target = ns.WhisperTarget(key) } end
+    else
+        for _, nk in ipairs(order) do targets[#targets + 1] = { channel = "WHISPER", target = whisperName[nk] } end
+    end
 
     local s = {
         id = id, kind = kind, label = label, parts = parts,
@@ -204,7 +178,7 @@ local function Start(kind, label, payload)
 
     local names = {}
     for _, nk in ipairs(order) do names[#names + 1] = Name(expected[nk]) end
-    local seconds = math.max(1, math.floor((s.total - BURST) * GAP + 0.5))
+    local seconds = ns.CommEstimate(s.total, #payload * #targets, inInstance)
     ns.Print("Sharing %s with: %s", label, table.concat(names, ", "))
     ns.Print("%d part(s), %d message(s), about %d s. Recipients confirm in chat when they have everything.",
         parts, s.total, seconds)
@@ -296,9 +270,9 @@ local incoming = {}   -- [senderNK] = transfer
 local function Answer(t, status)
     local msg = ("SYNCACK:%s:%s"):format(t.id, status)
     if t.channel == "WHISPER" then
-        Queue(msg, "WHISPER", t.sender)
+        QueueAnswer(msg, "WHISPER", t.sender)
     else
-        Queue(msg, t.channel)
+        QueueAnswer(msg, t.channel)
     end
 end
 

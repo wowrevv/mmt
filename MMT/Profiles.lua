@@ -25,6 +25,11 @@ ns.defaults = {
         layerHopNotify = true,   -- pulsing "Layer Hop" when a layer/phase switch is offered
         layerHopAuto   = false,  -- accept it automatically ...
         layerHopDelay  = 5,      -- ... after this many seconds
+        followCheck    = true,   -- watch whether team characters keep following
+        followWarn     = true,   -- raid warning "<Name> stopped following"
+        followSound    = true,   -- raid warning sound
+        followIgnoreCombat = true, -- breaks in combat only count if still not following after combat
+        followCombatDelay  = 5,    -- ... this many seconds after combat
         showBars    = true,
         classColors = true,
         showGold    = true,
@@ -36,12 +41,53 @@ ns.defaults = {
         size        = 12,
         outline     = "OUTLINE",
         align       = "SPLIT",   -- SPLIT (name left, values right) | LEFT | CENTER | RIGHT
-        width       = 300,
+        width       = 325,
+        barMode     = "XP",      -- XP | REP: what the bar (and its % value) shows
         barHeight   = 18,
+        rowGap      = 3,         -- pixels between the rows
         bgAlpha     = 0.35,
         alpha       = 1,
         scale       = 1,
-        point       = { "TOPLEFT", "TOPLEFT", 30, -250 },
+        point       = { "LEFT", "LEFT", 300, 0 },   -- vertically centred, 300 from the left edge (grows up and down)
+    },
+
+    -- FTL: macros with {FTL} = the character you are playing (FTL.lua)
+    ftl = {
+        enabled    = true,
+        detect     = "MANUAL",  -- MANUAL: click, key, command | MOVE: moving a character on its own makes it the leader
+        nameFormat = "FULL",    -- FULL "First Last" | FIRST "First" | UNIT party/raid unit ("party2")
+        skipSelf   = true,      -- leave {FTL} lines out on the leader's own client
+        crown      = true,      -- crown in front of the leader in the XP window
+        announce   = true,      -- chat line when the leader changes
+        macros = {
+            { name = "FTL Follow", body = "/follow {FTL}" },
+            { name = "FTL Assist", body = "/assist {FTL}" },
+        },
+    },
+
+    -- privacy (Privacy.lua): how characters are shown
+    privacy = {
+        nameMode    = "FIRST",   -- FIRST | LAST | FULL | CLASS ("Druid 1") | SLOT ("Slot 1"); everywhere in MMT
+        debugFull   = true,      -- keep full names in debug logs and reports
+        hideOutside = false,     -- also replace names in Blizzard frames, chat and tooltips
+    },
+
+    -- crowd control check (CC.lua)
+    cc = {
+        enabled     = true,   -- report when a team character can't move
+        warn        = true,   -- raid warning "<Name> is stunned" (on the FTL leader's client)
+        sound       = true,   -- raid warning sound
+        stun        = true,   -- stuns
+        fear        = true,   -- fears, charms, mind control
+        incap       = true,   -- incapacitates: polymorph, sap, sleep ...
+        root        = true,   -- roots
+        minDuration = 2,      -- ignore effects shorter than this many seconds
+    },
+
+    -- team communication
+    comm = {
+        guild = false,   -- send team messages on the guild channel (all characters in one guild)
+        fast  = false,   -- 1200 instead of 800 bytes per second
     },
 
     -- settings of modules: [moduleName] = { ... } (defaults come from the module)

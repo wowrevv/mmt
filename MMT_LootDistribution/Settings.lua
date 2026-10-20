@@ -82,12 +82,16 @@ M.Page = function(_, page)
     local unassigned = R:Cycle("No role wants it", {
         { value = "LEAVE", text = "Leave for manual" },
         { value = "SELF",  text = "To looter / leader" },
+        { value = "RR",    text = "Round robin to the team" },
         { value = "GREED", text = "Everyone rolls Greed" },
         { value = "NEED",  text = "Everyone rolls Need" },
         { value = "PASS",  text = "Everyone Passes" },
     }, gu, su)
     UI.Tooltip(unassigned, "No role wants it",
-        "What happens when no Role matches an item:\n\n- Leave for manual: leave in the loot window / leave roll popup open.\n- To looter / leader: Master Looter gives to self; Group Loot has the chosen Looter/leader roll Greed while others Pass.\n- Everyone rolls Greed / Need / Passes: Group Loot roll for all team members (respecting bag reserve).")
+        "What happens when no Role matches an item:\n\n- Leave for manual: leave in the loot window / leave roll popup open.\n- To looter / leader: Master Looter gives to self; Group Loot has the chosen Looter/leader roll Greed while others Pass.\n- Round robin to the team: gives or rolls Greed in turns across the team.\n- Everyone rolls Greed / Need / Passes: Group Loot roll for all team members (respecting bag reserve).")
+    local grr, srr = Opt("rrNotice")
+    R:Check("Say so in chat (round robin)", grr, srr,
+        "Prints \"[Item] is not part of any role or rule, so it was given round robin to <Name>.\" (only for you). Round robin keeps the free bag slots above; quest items are never part of it.")
     local grep, srep = Opt("report")
     R:Check("Report in chat", grep, srep, "Prints each item given or rolled on and the loot settings that were applied (only for you).")
     R:Note("Tip: on the Roles tab you can drop in specific items or pick item groups, tick team members (or click All), and choose whether that role rolls Need, Greed, Pass or Manual.")
@@ -95,7 +99,7 @@ M.Page = function(_, page)
     R:Header("Quest items")
     local gq, sq = Opt("questRR")
     R:Check("Auto-handle quest items", gq, sq,
-        "Master Looter: quest items go to team members who still need them in turns.\nGroup Loot: characters with an open quest objective for the item roll Need; characters who finished the objective roll Pass.")
+        "Master Looter: quest items go to team members who still need them in turns (free bag slots reserve doesn't apply).\nGroup Loot: characters with an open quest objective for the item roll Need; characters who finished the objective roll Pass.")
 
     page.OnRefresh = function()
         local method = mod.GetMethod()
@@ -120,10 +124,11 @@ function M.Report(_, add)
     add(("-- Loot Distribution  current=%s partyML=%s raidML=%s threshold=%s isMaster=%s leader=%s"):format(
         tostring(method), tostring(partyIndex), tostring(raidIndex), tostring(mod.GetThreshold()),
         tostring(mod.IsMasterLooter()), tostring(IsInGroup() and UnitIsGroupLeader("player"))))
-    add(("settings: auto=%s method=%s threshold=%s looter=%s byRoles=%s roleMode=%s reserve=%s unassigned=%s autoRoll=%s rollBoP=%s questRR=%s"):format(
+    add(("settings: auto=%s method=%s threshold=%s looter=%s byRoles=%s roleMode=%s reserve=%s unassigned=%s rrNotice=%s autoRoll=%s rollBoP=%s questRR=%s"):format(
         tostring(M.db.autoMethod), tostring(M.db.method), tostring(M.db.threshold), tostring(M.db.looter),
         tostring(M.db.byRoles), tostring(M.db.roleMode), tostring(M.db.reserve), tostring(M.db.unassigned),
-        tostring(M.db.autoRoll), tostring(M.db.rollBoP), tostring(M.db.questRR)))
+        tostring(M.db.rrNotice), tostring(M.db.autoRoll), tostring(M.db.rollBoP), tostring(M.db.questRR)))
+    add("quest round robin=" .. tostring(M.db.questRR))
     for itemID, key in pairs(M.store.questRR or {}) do add(("  quest item %s: last given to %s"):format(tostring(itemID), MMT.Repr(key))) end
     for itemID, key in pairs(M.store.groupRR or {}) do add(("  group RR item %s: last rolled by %s"):format(tostring(itemID), MMT.Repr(key))) end
     for _, key in ipairs(MMT.SortedMembers()) do

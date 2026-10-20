@@ -4,8 +4,10 @@
 local ADDON, ns = ...
 _G.MMT = ns
 ns.title = "MMT"
-ns.version = "0.7.1"
+ns.version = "0.9.5"
 ns.prefix = "MMT"
+ns.LOGO = "Interface\\AddOns\\MMT\\Media\\Logo"   -- the MMT mark (Media/Logo.tga)
+ns.ICON = "Interface\\AddOns\\MMT\\Media\\Icon"   -- the mark on a dark tile (Media/Icon.tga)
 
 ---------------------------------------------------------------------------
 -- Fonts (LibSharedMedia fonts are added when that library is present)
@@ -67,6 +69,10 @@ function ns.Debug(fmt, ...)
     if not (MMTDB and MMTDB.debug) then return end
     local ok, msg = pcall(string.format, fmt, ...)
     if not ok then msg = tostring(fmt) end
+    -- "Keep full names in debug logs" off: names become their shown names
+    if ns.db and ns.db.privacy and not ns.db.privacy.debugFull and ns.ReplaceNames then
+        msg = ns.ReplaceNames(msg, true)
+    end
     local line = date("%H:%M:%S") .. " " .. msg
     MMTDB.debuglog = MMTDB.debuglog or {}
     local log = MMTDB.debuglog
@@ -203,29 +209,94 @@ local function Member(key)
     return ns.db and ns.db.team and ns.db.team[key]
 end
 
-function ns.FirstName(key)
+-- Real names: only for what needs them (macros, invites, whispers, unit
+-- lookups). Everything shown to the player uses ns.ShownName (privacy).
+function ns.RealFirst(key)
     local m = Member(key)
     if m and m.name then return m.name end
     key = ns.StripRealm(key or "")
     return key:match("^([^%-%s]+)") or key
 end
 
--- "First Last" for chat messages: characters are always addressed by both names.
-function ns.FullDisplay(key)
+-- the last name: stored with the member, else from the team key
+-- ("First-Last") or from the name the character last sent with
+local function LastOf(text)
+    if not text or text == "" or ns.IsSecret(text) then return nil end
+    return ns.StripRealm(text):match("^[^%-%s]+[%-%s]+(.+)$")
+end
+function ns.RealLast(key)
     local m = Member(key)
-    if m and m.name then
-        return m.last and (m.name .. " " .. m.last) or m.name
+    if m and m.last and m.last ~= "" then return m.last end
+    local s = ns.status and ns.status[key]
+    return LastOf(key) or LastOf(s and s.sender)
+end
+
+-- "First Last"
+function ns.RealName(key)
+    local first, last = ns.RealFirst(key), ns.RealLast(key)
+    return last and (first .. " " .. last) or first
+end
+
+---------------------------------------------------------------------------
+-- Privacy: how characters are shown (Team > Privacy)
+--   FIRST "Catsi", LAST "Purrita", FULL "Catsi Purrita",
+--   CLASS "Druid 1", "Druid 2" (team order), SLOT "Slot 1", "Slot 2" ...
+---------------------------------------------------------------------------
+local function NameMode()
+    local p = ns.db and ns.db.privacy
+    return p and p.nameMode or "FIRST"
+end
+
+local function ClassOf(key)
+    local m = Member(key)
+    local class = m and m.class
+    if not class and ns.status and ns.status[key] then class = ns.status[key].class end
+    if not class and ns.IsSelf and ns.IsSelf(key) then class = select(2, UnitClass("player")) end
+    if class == "" or ns.IsSecret(class) then return nil end
+    return class
+end
+
+local function ClassLabel(class)
+    local names = LOCALIZED_CLASS_NAMES_MALE or {}
+    return names[class] or (class:sub(1, 1) .. class:sub(2):lower())
+end
+
+-- the name for a mode (nil mode = the current setting)
+function ns.NameFor(key, mode)
+    if not key then return "?" end
+    mode = mode or NameMode()
+    local m = Member(key)
+    if mode == "FULL" then return ns.RealName(key) end
+    if mode == "LAST" then return ns.RealLast(key) or ns.RealFirst(key) end
+    if (mode == "CLASS" or mode == "SLOT") and m and ns.SortedMembers then
+        local order = ns.SortedMembers()
+        local slot
+        for i, k in ipairs(order) do if k == key then slot = i end end
+        if mode == "CLASS" then
+            local class = ClassOf(key)
+            if class then
+                local n = 0
+                for _, k in ipairs(order) do
+                    if ClassOf(k) == class then n = n + 1 end
+                    if k == key then break end
+                end
+                return ClassLabel(class) .. " " .. n
+            end
+        end
+        if slot then return "Slot " .. slot end   -- class not known yet
     end
-    return (ns.StripRealm(key or "?"):gsub("-", " "))
+    if not m and (mode == "CLASS" or mode == "SLOT") then return ns.RealName(key) end   -- not in the team
+    return ns.RealFirst(key)
 end
 
--- Name shown in windows: the first name. The full name is in the
--- mouseover tooltip (ns.MemberTooltip); chat messages use FullDisplay.
-function ns.Display(key)
-    return ns.FirstName(key)
-end
+function ns.ShownName(key) return ns.NameFor(key) end
 
--- Opens GameTooltip for a team member: full name in class colour, roles and
+-- All of these follow the privacy setting (kept for modules and older code).
+ns.FirstName = ns.ShownName      -- windows
+ns.FullDisplay = ns.ShownName    -- chat messages
+function ns.Display(key) return ns.ShownName(key) end
+
+-- Opens GameTooltip for a team member: shown name in class colour, roles and
 -- online state. Returns the tooltip so callers can add lines before :Show().
 function ns.MemberTooltip(owner, key, anchor)
     GameTooltip:SetOwner(owner, anchor or "ANCHOR_RIGHT")
@@ -285,7 +356,15 @@ function ns.Resolve(name)
             found = key
         end
     end
-    return found
+    if found then return found end
+    -- the shown name ("Druid 1", "Slot 2", a last name), e.g. /mmt leader Druid 1
+    local mode = ns.db.privacy and ns.db.privacy.nameMode
+    if mode and mode ~= "FIRST" and mode ~= "FULL" then
+        for key in pairs(team) do
+            if ns.NormKey(ns.NameFor(key)) == nk then return key end
+        end
+    end
+    return nil
 end
 
 function ns.NameFromGUID(guid, fallback)

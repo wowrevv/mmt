@@ -89,28 +89,50 @@ M.Report = function(self, add)
     add("Example: greeting=" .. tostring(M.db.greeting))
 end
 
--- Names: windows show the first name, MMT.FirstName(key); the full
--- name goes into the mouseover: MMT.HoverMember(frame, function()
--- return key end). Chat messages use the full name, MMT.FullDisplay(key).
+-- Names: internally, characters are always addressed by their full name
+-- (team key "First-Last"; messages, whispers, invites, unit lookups), so
+-- features find the right character. Everything the player SEES uses the
+-- privacy setting (Team > Privacy: first name by default, last or full
+-- name, "Druid 1", "Slot 2"): MMT.ShownName(key) (MMT.FirstName and
+-- MMT.FullDisplay do the same) in frames, chat lines, tooltips, warnings.
+-- Real names only where the game needs them, e.g. macros:
+-- MMT.RealName(key), MMT.RealFirst(key), MMT.RealLast(key).
+-- Mouseover: MMT.HoverMember(frame, function() return key end).
 
 -- Useful core functions: MMT.Print, M:Debug, MMT.SortedMembers(),
 -- MMT.IsOnline(key), MMT.IsSelf(key), MMT.PlayerFull(),
 -- MMT.UI (widgets), MMT.Listen("PROFILE_CHANGED", fn)
 ]]
 
-local COMM_TEXT = "Every client runs its own MMT. The core sends to your party or raid and whispers team members who aren't in the group. Only messages from characters in this client's team are passed on. Keep messages under 250 bytes and start them with your own tag. Taken: XP, XP2, BYE, PING, PONG, SYNC, SYNCHI, SYNCACK, EQREQ, EQD, EQS, QNQ, QNA, LH, LHGO, QTREQ, QTS, QTD, QTAB."
+local COMM_TEXT = "Every client runs its own MMT. Everything is sent through one queue in the core, which keeps to the game's limits (about 10 messages per prefix, then 1 per second, on group and guild channels) and sends throttled messages again. Give important messages priority \"ALERT\", large ones \"BULK\" (default \"NORMAL\"). Long texts: MMT.SendLong splits them and the other side gets the whole text. Only messages from characters in this client's team are passed on. Keep single messages under 250 bytes and start them with your own tag. Leader tag (FTL): MMT.SendToLeader reaches only the FTL leader; scope \"FOLLOWERS\" reaches everybody but the leader. Each client checks against the leader it knows. MMT.SendAlert(msg) sends to the leader first, then to everybody else. Taken: XP, XP2, BYE, PING, PONG, SYNC, SYNCHI, SYNCACK, EQREQ, EQD, EQS, QNQ, QNA, LH, LHGO, LHC, QTREQ, QTS, QTD, QTAB, FOL, CC, MPT, FTL, FTLM, and the tag prefixes @L: and @F:."
 
 local COMM_CODE = [[
--- send to the whole team (true = only members that are online)
-MMT.SendToTeam("EXPING:" .. GetMoney(), true)
+-- send to the whole team (true = only members that are online);
+-- optional priority: "ALERT" (first) | "NORMAL" | "BULK" (last)
+MMT.SendToTeam("EXPING:" .. GetMoney(), true, "ALERT")
 
 -- send to one character, e.g. answer the sender of a message
 MMT.SendAddon("EXPONG:ok", "WHISPER", sender)
 
+-- a long text (any size): sent in parts, arrives in one piece
+-- (to the team, or to one character as second argument)
+MMT.SendLong("EXDATA:" .. MMT.Serialize(myTable))
+
+-- only for the FTL leader (returns "self" and sends nothing when this
+-- character IS the leader: handle it here then)
+if MMT.SendToLeader("EXCOME:" .. GetZoneText()) == "self" then
+    -- this character leads
+end
+-- everybody but the leader: scope as 5th argument of SendToTeam
+-- (4th of SendLong); "LEADER" works there too
+MMT.SendToTeam("EXWAIT", true, "NORMAL", nil, "FOLLOWERS")
+
 -- receive: called for every team message the core doesn't handle itself
 --   key    team key of the sender ("First-Last")
 --   sender name as the game reported it (use it to whisper back)
-M:Listen("TEAM_MESSAGE", function(key, sender, text)
+--   scope  nil, "LEADER" or "FOLLOWERS" (the tag is already removed
+--          and messages not meant for this client never arrive)
+M:Listen("TEAM_MESSAGE", function(key, sender, text, scope)
     local money = text:match("^EXPING:(%d+)$")
     if money then
         MMT.Print("%s has %s", MMT.FullDisplay(key),

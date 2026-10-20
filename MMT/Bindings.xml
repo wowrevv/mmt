@@ -1,4 +1,7 @@
 <Bindings>
-    <!-- Key bindings live in the modules (e.g. MMT_ItemCompare/Bindings.xml).
-         This placeholder stays so clients updated from 0.3.0 without a restart find the file. -->
+    <!-- Key bindings of the core. Modules bring their own Bindings.xml with their OWN header
+         (e.g. header="MMT_ITEMCOMPARE"): a header name may exist only once in the game. -->
+    <Binding name="MMT_FTL_LEADER" header="MMT" category="ADDONS">
+        MMT_FTL_SetLeader()
+    </Binding>
 </Bindings>

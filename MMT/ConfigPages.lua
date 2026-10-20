@@ -96,7 +96,7 @@ ns.RegisterPage("team", "Team", function(page)
     col:Header("Team members")
     col:Note("The characters of your team, in the order the XP window shows them. Green dot = online with MMT.")
 
-    local list = List(page, PAGE_W, 11, 22, function(parent, i)
+    local list = List(page, PAGE_W, 8, 22, function(parent, i)
         local row = CreateFrame("Frame", nil, parent)
         RowBackground(row, i)
         row.dot = row:CreateTexture(nil, "ARTWORK")
@@ -130,7 +130,7 @@ ns.RegisterPage("team", "Team", function(page)
         local roles = table.concat(ns.MemberRoleList(key), ", ")
         row.roles:SetText(roles ~= "" and roles or "no roles")
     end)
-    col:Add(list, 11 * 22)
+    col:Add(list, 8 * 22)
     local empty = UI.Label(page, "No team members yet. Group up and press \"Add group\", or type a name below.")
     empty:SetPoint("TOPLEFT", list, "TOPLEFT", 8, -4)
     empty:SetTextColor(0.5, 0.5, 0.5)
@@ -181,11 +181,61 @@ ns.RegisterPage("team", "Team", function(page)
     col:Add(youHover, UI.ROW)
     col:Note("Every account keeps its own team. Add the team on each client, or send it with Profiles > Sync to team (/mmt sync).")
 
+    -- two columns: communication left, privacy right
+    local C = UI.Column(page, 0, col.y, COL_W)
+    C:Header("Communication")
+    local gg, sg = Opt("comm", "guild")
+    C:Check("Use guild channel", gg, function(v)
+        sg(v)
+        if v and ns.ReadGuildRoster then
+            ns.ReadGuildRoster()
+            if C_GuildInfo and C_GuildInfo.GuildRoster then C_GuildInfo.GuildRoster() end
+        end
+    end, "One message on the guild channel reaches every team member in your guild, grouped or not, and the guild roster shows who is online. Team members outside the guild still get whispers. Every guild member running MMT receives the messages too (and ignores them). Turn it on on every client.")
+    local gf, sf = Opt("comm", "fast")
+    C:Check("Faster sending (1200 bytes/s)", gf, sf,
+        "Large transfers (settings sync, item and quest data) go out at up to 1200 instead of 800 bytes per second. Faster, but very large amounts at once can get a client disconnected.")
+    local commInfo = C:Note("")
+
+    local P = UI.Column(page, COL2_X, col.y, COL_W)
+    P:Header("Privacy")
+    local gm, sm = Opt("privacy", "nameMode")
+    P:Cycle("Show characters by", {
+        { value = "FIRST", text = "First name" },
+        { value = "LAST", text = "Last name" },
+        { value = "FULL", text = "Full name" },
+        { value = "CLASS", text = "Class (Druid 1, Druid 2)" },
+        { value = "SLOT", text = "Slot (Slot 1, Slot 2)" },
+    }, gm, function(v) sm(v) ns.Fire("STATUS_CHANGED") if ns.PrivacyChanged then ns.PrivacyChanged() end end)
+    local gd, sd = Opt("privacy", "debugFull")
+    P:Check("Keep full names in debug logs", gd, sd,
+        "Off: names in the debug log and report are replaced by the names shown above (\"Slot 1\" when that is the full name). For reports you post somewhere.")
+    local gh, sh = Opt("privacy", "hideOutside")
+    local hideCheck = P:Check("Hide names outside MMT too", gh, function(v) sh(v) if ns.PrivacyChanged then ns.PrivacyChanged() end end,
+        "Replaces your team's names in chat, unit frames (player, target, focus, party, raid), nameplates, unit tooltips and the frames of other addons (e.g. their raid frames) with the names shown above, where the game allows it. Not with \"Full name\".")
+    P:Note("Everything in MMT uses this. Macros, invites and whispers keep the real names.")
+
     page.OnRefresh = function()
         local members = ns.SortedMembers()
         list:Render(members)
         empty:SetShown(#members == 0)
         you:SetText("You are playing " .. ns.FirstName(ns.PlayerFull()) .. ".")
+        local full = ns.db.privacy.nameMode == "FULL"
+        hideCheck:SetAlpha(full and 0.4 or 1)
+        if hideCheck.SetEnabled then hideCheck:SetEnabled(not full) end
+        if ns.db.comm.guild then
+            if not IsInGuild() then
+                commInfo:SetText("|cffff6666Not in a guild:|r messages go to the group and by whisper as usual.")
+            else
+                local outside = ns.TeamOutsideGuild()
+                local names = {}
+                for _, k in ipairs(outside) do names[#names + 1] = ns.FirstName(k) end
+                commInfo:SetText(#outside == 0 and "Guild mode: all team members are in your guild."
+                    or ("Not in your guild (reached by whisper): " .. table.concat(names, ", ")))
+            end
+        else
+            commInfo:SetText("Team messages go to your group, and by whisper to members outside it. Large transfers go by whisper outside instances.")
+        end
     end
     ns.Listen("STATUS_CHANGED", function() if page:IsVisible() then list:Render(ns.SortedMembers()) end end)
 end)
@@ -419,14 +469,20 @@ ns.RegisterPage("xp", "XP Window", function(page)
     local L = UI.Column(page, 0, 0, COL_W)
     L:Header("XP window")
     L:Check("Show window", Opt("xp", "enabled"))
-    L:Check("Lock position", Opt("xp", "locked"))
+    local glk, slk = Opt("xp", "locked")
+    L:Check("Lock position", glk, slk, "Unlocked, Shift + drag moves the window.")
     local gct, sct = Opt("xp", "clickThrough")
-    L:Check("Click-through", gct, sct, "Clicks go through the window to the game world. No mouseover details then.")
+    L:Check("Click-through", gct, sct, "Clicks go through the window to the game world. No mouseover details or click actions then. Otherwise: click a member to make them the FTL leader, right-click to invite, Ctrl-click to inspect, Ctrl-right-click for talents, middle-click to invite the whole team, Shift-right-click for settings.")
     L:Check("Show your own character", Opt("xp", "showSelf"))
     L:Check("Show level", Opt("xp", "showLevel"))
     local gr, sr = Opt("xp", "showRested")
     L:Check("Show rested XP (%)", gr, sr, "Rested XP in percent of the current level, e.g. R 35%. Also shaded on the bar.")
-    L:Check("Show XP bars", Opt("xp", "showBars"))
+    L:Check("Show bars", Opt("xp", "showBars"))
+    local gbm, sbm = Opt("xp", "barMode")
+    L:Cycle("Bar shows", {
+        { value = "XP", text = "Experience" },
+        { value = "REP", text = "Reputation (watched faction)" },
+    }, gbm, sbm)
     L:Check("Class colours", Opt("xp", "classColors"))
 
     L:Header("Gold, bags & durability")
@@ -452,7 +508,6 @@ ns.RegisterPage("xp", "XP Window", function(page)
     L:Check("Accept the layer hop automatically", gau, sau, "Counts down in chat, then accepts.")
     local gd, sd = Opt("xp", "layerHopDelay")
     L:Slider("Accept after (seconds)", 1, 30, 1, gd, sd)
-    L:Note("Tip: with many values per row, widen the window (Width) or use a smaller font.")
 
     local R = UI.Column(page, COL2_X, 0, COL_W)
     R:Header("Look")
@@ -486,6 +541,8 @@ ns.RegisterPage("xp", "XP Window", function(page)
     R:Slider("Width", 100, 400, 5, gw, sw)
     local gh, sh = Opt("xp", "barHeight")
     R:Slider("Bar height", 10, 36, 1, gh, sh)
+    local grg, srg = Opt("xp", "rowGap")
+    R:Slider("Row spacing", 0, 10, 1, grg, srg)
     local gs, ss = Opt("xp", "scale")
     R:Slider("Scale", 0.5, 2, 0.05, gs, ss, "%.2f")
     local gal, sal = Opt("xp", "alpha")
@@ -494,6 +551,198 @@ ns.RegisterPage("xp", "XP Window", function(page)
     R:Slider("Background opacity", 0, 1, 0.05, gb, sb, "%.2f")
     R:Button("Reset window position", function() ns.ResetXPPosition() end)
 
+    R:Space(6)
+    R:Note("Follow and crowd control warnings: Alerts page.")
+
+end)
+
+---------------------------------------------------------------------------
+-- Alerts: follow and crowd control
+---------------------------------------------------------------------------
+ns.RegisterPage("alerts", "Alerts", function(page)
+    local L = UI.Column(page, 0, 0, COL_W)
+    L:Header("Follow")
+    L:Note("Warns when a team character stops following.")
+    local gfc, sfc = Opt("xp", "followCheck")
+    L:Check("Check /follow of team", gfc, sfc,
+        "Every client reports when its character starts or stops following. A member who stops gets a red, pulsing row in the XP window. Needs MMT on every client.")
+    local gfw, sfw = Opt("xp", "followWarn")
+    L:Check("Show warning when follow breaks", gfw, sfw,
+        "Raid warning \"<Name> stopped following\" on the client of the character that was followed (the one you play).")
+    local gfs, sfs = Opt("xp", "followSound")
+    L:Check("Play sound when follow breaks", gfs, sfs, "The raid warning sound, on the same client as the warning.")
+    local gfi, sfi = Opt("xp", "followIgnoreCombat")
+    L:Check("Ignore follow breaks during combat", gfi, sfi,
+        "Follow often breaks in a fight. A break in combat only counts if the character still isn't following when the time below has passed after its combat ended.")
+    local gfd, sfd = Opt("xp", "followCombatDelay")
+    L:Slider("Check after combat (seconds)", 1, 30, 1, gfd, sfd)
+
+    local R = UI.Column(page, COL2_X, 0, COL_W)
+    R:Header("Crowd control")
+    R:Note("Warns when a team character can't move: stunned, feared, incapacitated or rooted. The XP window marks the row orange with the time left.")
+    local ge, se = Opt("cc", "enabled")
+    R:Check("Check crowd control of team", ge, se,
+        "Every client reports when its character loses control and when it is free again. Needs MMT on every client.")
+    local gw, sw = Opt("cc", "warn")
+    R:Check("Show warning", gw, sw,
+        "Raid warning \"<Name> is stunned (4 s)\" on the FTL leader's client (the character you play). With no leader known, on every client. Never for the character itself.")
+    local gs, ss = Opt("cc", "sound")
+    R:Check("Play sound", gs, ss, "The raid warning sound, on the same client as the warning.")
+    R:Space(4)
+    R:Note("Report:")
+    R:Check("Stuns", Opt("cc", "stun"))
+    local gf, sf = Opt("cc", "fear")
+    R:Check("Fears and charms", gf, sf, "Fear, horror, charm, mind control.")
+    local gi, si = Opt("cc", "incap")
+    R:Check("Incapacitates", gi, si, "Polymorph, sap, sleep, gouge and similar.")
+    R:Check("Roots", Opt("cc", "root"))
+    local gm, sm = Opt("cc", "minDuration")
+    R:Slider("Ignore shorter than (seconds)", 0, 10, 1, gm, sm)
+end)
+
+---------------------------------------------------------------------------
+-- FTL
+---------------------------------------------------------------------------
+ns.RegisterPage("ftl", "FTL", function(page)
+    local L = UI.Column(page, 0, 0, COL_W)
+    L:Header("FTL")
+    L:Note("FTL is short for Focusless, Targetless, Leaderless. It allows you to create macros that will always target the character you are controlling right now; like for follow or assist.")
+    local warn = L:Note("Important: this feature originates from the software ISBoxer, but is inferior to it. The FTL target in MMT CANNOT be changed during combat.")
+    warn:SetTextColor(1, 0.45, 0.4)
+
+    L:Header("Settings")
+    L:Check("Use FTL macros", Opt("ftl", "enabled"))
+    local gd, sd = Opt("ftl", "detect")
+    L:Cycle("Leader", {
+        { value = "MANUAL", text = "Only by click, key, command" },
+        { value = "MOVE", text = "Automatic, when you move" },
+    }, gd, sd)
+    local gn, sn = Opt("ftl", "nameFormat")
+    L:Cycle("{FTL} becomes", {
+        { value = "FULL", text = "First Last" },
+        { value = "FIRST", text = "First name" },
+        { value = "UNIT", text = "Group unit (party2)" },
+    }, gn, sn)
+    local gs, ss = Opt("ftl", "skipSelf")
+    L:Check("Leave {FTL} lines out on the leader", gs, ss,
+        "On the leader's own client, macro lines with {FTL} are left out (the leader can't follow or assist itself).")
+    local gc, sc = Opt("ftl", "crown")
+    L:Check("Crown on the leader in the XP window", gc, sc)
+    local ga, sa = Opt("ftl", "announce")
+    L:Check("Chat line when the leader changes", ga, sa)
+
+    L:Header("Changing the leader")
+    L:Note("- Click the character in the XP window\n- Key binding \"Make this character the leader\" (Esc > Options > Keybindings > AddOns > MMT)\n- /mmt leader (this character) or /mmt leader <name>\n- Automatically when you move a character on its own (setting above). Not when several team characters start moving at once (movement keys or Interact with Target broadcast to every window: the leader stays), and not while following, feared or charmed.")
+    local current = L:Note("")
+
+    -- right: the macros ---------------------------------------------------
+    local R = UI.Column(page, COL2_X, 0, COL_W)
+    R:Header("Macros")
+    local selected = 1
+    local status
+    local nameBox, bodyBox, preview
+    local function Macros() return ns.db.ftl.macros end
+
+    local list = List(page, COL_W, 5, 22, function(parent, i)
+        local row = CreateFrame("Button", nil, parent)
+        RowBackground(row, i)
+        row.text = UI.Label(row, "")
+        row.text:SetPoint("LEFT", 8, 0)
+        row.text:SetPoint("RIGHT", -8, 0)
+        row.text:SetJustifyH("LEFT")
+        row.text:SetWordWrap(false)
+        row.sel = UI.Fill(row, A[1], A[2], A[3], 0.15, "BORDER")
+        local hl = row:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints(); hl:SetColorTexture(1, 1, 1, 0.05)
+        row:SetScript("OnClick", function()
+            selected = row.index
+            nameBox:ClearFocus(); bodyBox.edit:ClearFocus()
+            page.OnRefresh()
+        end)
+        return row
+    end, function(row, m, index)
+        row.index = index
+        row.text:SetText(m.name ~= "" and m.name or "(no name)")
+        row.sel:SetShown(index == selected)
+    end)
+    R:Add(list, 5 * 22 + 6)
+
+    nameBox = UI.EditBox(page, COL_W, "Macro name (max. 16 characters)")
+    nameBox:SetMaxLetters(16)
+    R:Add(nameBox, UI.ROW + 4)
+    bodyBox = UI.TextArea(page, COL_W, 92)
+    bodyBox.edit:SetMaxLetters(255)
+    R:Add(bodyBox, 98)
+    bodyBox.edit:HookScript("OnTextChanged", function(self)
+        local text, cut = ns.FTLResolve(self:GetText())
+        preview:SetText("Here: " .. (text ~= "" and text:gsub("\n", " | ") or "(nothing: every line has {FTL})") .. (cut and "  |cffff6666(too long)|r" or ""))
+    end)
+    preview = R:Note("")
+
+    local function Save()
+        local name = ns.Trim(nameBox:GetText())
+        local body = bodyBox.edit:GetText()
+        if name == "" then status.Show_("Give the macro a name.", true) return end
+        for i, m in ipairs(Macros()) do
+            if i ~= selected and m.name == name then status.Show_("There is already a macro called " .. name .. ".", true) return end
+        end
+        local m = Macros()[selected]
+        if not m then m = {}; table.insert(Macros(), m); selected = #Macros() end
+        m.name, m.body = name, body
+        local r = ns.FTLUpdateMacros("edit")
+        status.Show_(r == "combat" and "Saved. The WoW macro is written after combat." or ("Saved: " .. name .. "."))
+        page.OnRefresh()
+    end
+
+    local save = UI.Button(page, 120, "Save", Save)
+    R:Add(save, 0)
+    local new = UI.Button(page, 120, "New", function()
+        table.insert(Macros(), { name = "FTL " .. (#Macros() + 1), body = "/follow {FTL}" })
+        selected = #Macros()
+        page.OnRefresh()
+        nameBox:SetFocus(); nameBox:HighlightText()
+        status.Show_("New macro: change name and text, then Save.")
+    end)
+    new:SetPoint("LEFT", save, "RIGHT", 8, 0)
+    R:Space(UI.ROW + 4)
+    local delete = ConfirmButton(page, 120, "Delete", function()
+        local m = Macros()[selected]
+        if not m then return end
+        table.remove(Macros(), selected)
+        selected = math.max(1, selected - 1)
+        ns.FTLUpdateMacros("delete")
+        status.Show_("Deleted " .. m.name .. " (and its WoW macro).")
+        page.OnRefresh()
+    end)
+    R:Add(delete, 0)
+    local pickup = UI.Button(page, 120, "Drag to bar", function()
+        local m = Macros()[selected]
+        if m then ns.FTLPickup(m.name) end
+    end)
+    UI.Tooltip(pickup, "Drag to bar", "Puts the macro on your cursor: click an action bar slot to place it. The macro is also in the game's macro window (account macros).")
+    pickup:SetPoint("LEFT", delete, "RIGHT", 8, 0)
+    R:Space(UI.ROW + 4)
+    status = StatusLine(page)
+    status:SetWidth(COL_W)
+    R:Add(status, UI.ROW)
+    R:Note("Write {FTL} where the leader's name goes. Every client keeps these macros up to date.")
+    R:Space(6)
+    R:Header("Sending the macros to the team")
+    R:Note("Same account and profile: nothing to do. Other accounts: log them in, then click "
+        .. "Profiles > Sync to team (or /mmt sync) here and accept on each client. This sends all core "
+        .. "settings, not only the macros. Put the macros on each character's bar once (Drag to bar).")
+
+    page.OnRefresh = function()
+        local macros = Macros()
+        if selected > #macros then selected = math.max(1, #macros) end
+        list:Render(macros)
+        local m = macros[selected]
+        if not nameBox:HasFocus() then nameBox:SetText(m and m.name or "") nameBox:UpdatePlaceholder() end
+        if not bodyBox.edit:HasFocus() then bodyBox.edit:SetText(m and m.body or "") end
+        local leader = ns.FTLLeader()
+        current:SetText("Leader now: " .. (leader and (ns.FullDisplay(leader) .. (ns.IsSelf(leader) and " (this character)" or "")) or "nobody yet"))
+    end
+    ns.Listen("FTL_LEADER", function() if page:IsVisible() then page.OnRefresh() end end)
 end)
 
 ---------------------------------------------------------------------------

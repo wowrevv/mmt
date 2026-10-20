@@ -1,5 +1,5 @@
 <Bindings>
-    <Binding name="MMT_ITEM_COMPARE" header="MMT" category="ADDONS" runOnUp="true">
+    <Binding name="MMT_ITEM_COMPARE" header="MMT_ITEMCOMPARE" category="ADDONS" runOnUp="true">
         MMT_ItemCompareKey(keystate)
     </Binding>
 </Bindings>

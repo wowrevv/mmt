@@ -7,7 +7,7 @@ local MMT = MMT
 local M = mod.M
 local UI = MMT.UI
 
-BINDING_HEADER_MMT = "MMT - Manage My Team"
+BINDING_HEADER_MMT_ITEMCOMPARE = "MMT - Item Compare"
 BINDING_NAME_MMT_ITEM_COMPARE = "Item Compare (team items in the hovered item's slot)"
 local ACTION = "MMT_ITEM_COMPARE"
 

@@ -4,7 +4,8 @@
 --   * announce "[Quest] is ready for turn-in." in party chat,
 --   * share newly accepted quests with the group, or announce that a quest
 --     can't be shared,
---   * abandoning a quest asks whether to abandon it on the whole team.
+--   * abandoning a quest asks whether to abandon it on the whole team,
+--   * announce looted items that start a quest in party chat.
 
 local _, mod = ...
 local MMT = MMT
@@ -256,7 +257,7 @@ local function OnAbandoned()
     local link = mod.QuestLink(q.id, q.title)
     MMT.UI.Confirm(("You abandoned %s.\n\nDo you want to abort this quest on your entire team?"):format(link),
         "Yes", function()
-            MMT.SendToTeam("QTAB:" .. q.id, true)
+            MMT.SendToTeam("QTAB:" .. q.id, true, "ALERT")
             MMT.Print("Asked your team to abandon %s.", link)
         end, "No")
 end
@@ -348,3 +349,73 @@ M:Listen("TEAM_MESSAGE", function(key, sender, text)
     end
     AbandonHere(tonumber(id), key)
 end)
+
+---------------------------------------------------------------------------
+-- Announce looted items that start a quest
+--
+-- The bags are compared with the last look: an item that is new in the bags
+-- and starts a quest (that isn't in the quest log yet) is posted in party
+-- chat as "Looted [Item] - it starts a quest!" (not in a group: only for you).
+-- What is in the bags at login is not announced.
+---------------------------------------------------------------------------
+local known          -- [itemID] = true: items in the bags at the last look
+local NUM_BAGS = NUM_BAG_SLOTS or 4
+
+local Container = C_Container or {}
+local NumSlots  = Container.GetContainerNumSlots or GetContainerNumSlots
+local ItemIDAt  = Container.GetContainerItemID or GetContainerItemID
+local LinkAt    = Container.GetContainerItemLink or GetContainerItemLink
+local QuestInfoAt = Container.GetContainerItemQuestInfo or GetContainerItemQuestInfo
+
+-- questID (or true if only known to start one) and whether that quest is in the log
+local function StartsQuest(bag, slot)
+    if QuestInfoAt then
+        local ok, a, b, c = pcall(QuestInfoAt, bag, slot)
+        if not ok then return nil end
+        if type(a) == "table" then return a.questID, a.isActive end
+        return b, c   -- isQuestItem, questID, isActive
+    end
+    -- no API: the tooltip line "This Item Begins a Quest"
+    if C_TooltipInfo and C_TooltipInfo.GetBagItem and ITEM_STARTS_QUEST then
+        local data = C_TooltipInfo.GetBagItem(bag, slot)
+        for _, line in ipairs(data and data.lines or {}) do
+            if line.leftText == ITEM_STARTS_QUEST then return true, false end
+        end
+    end
+    return nil
+end
+
+local function LookAtBags(announce)
+    if not (NumSlots and ItemIDAt) then return end
+    local now = {}
+    for bag = 0, NUM_BAGS do
+        for slot = 1, (NumSlots(bag) or 0) do
+            local id = ItemIDAt(bag, slot)
+            if id and not now[id] then
+                now[id] = true
+                if announce and known and not known[id] then
+                    local questID, active = StartsQuest(bag, slot)
+                    if questID and not active then
+                        local link = LinkAt and LinkAt(bag, slot) or ("item " .. id)
+                        local msg = ("Looted %s - it starts a quest!"):format(link)
+                        M:Debug("quest starter %s (quest %s)", link, tostring(questID))
+                        if not mod.SayGroup(msg) then MMT.Print(msg) end
+                    end
+                end
+            end
+        end
+    end
+    known = now
+end
+
+local lookPending = false
+M:On("BAG_UPDATE_DELAYED", function()
+    if lookPending then return end
+    lookPending = true
+    C_Timer.After(0.2, function()
+        lookPending = false
+        LookAtBags(M.enabled and M.db.announceStarter)
+    end)
+end)
+-- the bags at login are only remembered
+MMT.OnLogin(function() C_Timer.After(2, function() LookAtBags(false) end) end)

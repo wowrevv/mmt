@@ -14,7 +14,9 @@ function ns.ShowText(title, text)
         local f = CreateFrame("Frame", "MMTTextFrame", UIParent)
         f:SetSize(620, 440)
         f:SetPoint("CENTER")
-        f:SetFrameStrata("DIALOG")
+        -- above the settings window (DIALOG, or FULLSCREEN_DIALOG when opened from the game options)
+        f:SetFrameStrata("FULLSCREEN_DIALOG")
+        f:SetToplevel(true)
         f:SetMovable(true)
         f:EnableMouse(true)
         f:SetClampedToScreen(true)
@@ -45,8 +47,18 @@ function ns.ShowText(title, text)
         textFrame = f
     end
     textFrame.title:SetText(title)
+    -- "Keep full names in debug logs" off: also older log lines and the report
+    if ns.db and ns.db.privacy and not ns.db.privacy.debugFull and ns.ReplaceNames then
+        text = ns.ReplaceNames(text, true)
+    end
     textFrame.area.edit:SetText(text)
+    -- same strata as the settings window: put it well above that window and its widgets
+    local config = _G.MMTConfigFrame
+    if config and config:IsShown() and config:GetFrameStrata() == textFrame:GetFrameStrata() then
+        textFrame:SetFrameLevel(math.min(9000, config:GetFrameLevel() + 100))
+    end
     textFrame:Show()
+    textFrame:Raise()
 end
 
 ---------------------------------------------------------------------------
@@ -86,7 +98,7 @@ function ns.BuildDebugReport()
     add("GetRealmName           = " .. Repr(GetRealmName()))
     add("GetNormalizedRealmName = " .. Repr(GetNormalizedRealmName and GetNormalizedRealmName()))
     add("PlayerFull (team key)  = " .. Repr(ns.PlayerFull()))
-    add("FullDisplay            = " .. Repr(ns.FullDisplay(ns.PlayerFull())))
+    add("RealName / ShownName   = " .. Repr(ns.RealName(ns.PlayerFull())) .. " / " .. Repr(ns.ShownName(ns.PlayerFull())))
     add("IsSelf(PlayerFull)     = " .. tostring(ns.IsSelf(ns.PlayerFull())))
     local registered = C_ChatInfo and C_ChatInfo.IsAddonMessagePrefixRegistered
         and C_ChatInfo.IsAddonMessagePrefixRegistered(ns.prefix)
@@ -94,6 +106,20 @@ function ns.BuildDebugReport()
     local own = ns.status[ns.PlayerFull() or ""] or {}
     add(("Status: money=%s free=%s/%s durability avg=%s lowest=%s"):format(tostring(own.money), tostring(own.free),
         tostring(own.slots), tostring(own.durAvg), tostring(own.durMin)))
+    do
+        local st = ns.commStats or {}
+        local qa, qn, qb = 0, 0, 0
+        if ns.CommQueued then qa, qn, qb = ns.CommQueued() end
+        add(("Comm: sent=%s bytes=%s throttled=%s failed=%s queued alert/normal/bulk=%d/%d/%d (max %s) rate=%s B/s guildMode=%s inGuild=%s inInstance=%s"):format(
+            tostring(st.sent), tostring(st.bytes), tostring(st.throttled), tostring(st.failed), qa, qn, qb,
+            tostring(st.maxQueued), tostring(ns.CommRate and ns.CommRate()), tostring(ns.GuildMode and ns.GuildMode()),
+            tostring(IsInGuild()), tostring(IsInInstance and IsInInstance())))
+        if ns.GuildMode and ns.GuildMode() then
+            local outside = {}
+            for _, k in ipairs(ns.TeamOutsideGuild()) do outside[#outside + 1] = Repr(k) end
+            add("  team outside the guild: " .. (#outside > 0 and table.concat(outside, ", ") or "none"))
+        end
+    end
     add(("Layer hop: pending=%s source=%s countdown=%s watched events=[%s] api=%s"):format(
         tostring(ns.hop.pending), tostring(ns.hop.source), tostring(ns.HopCountdownRunning()),
         table.concat(ns.hop.events or {}, ","),
@@ -181,6 +207,16 @@ function ns.HandleDebugCommand(arg)
         MMTDB.debugChat = not MMTDB.debugChat
         ns.Print("Printing debug lines to chat: %s", State(MMTDB.debugChat))
         ns.RefreshConfig()
+    elseif sub == "talents" then
+        -- what the game offers for viewing talents (for fixing Ctrl-click in the XP window)
+        local lines = { "MMT " .. ns.version .. " talent view candidates (global names with Talent / Inspect / UnitPopup...Talent)" }
+        for _, l in ipairs(ns.ListTalentGlobals and ns.ListTalentGlobals() or {}) do lines[#lines + 1] = l end
+        lines[#lines + 1] = ""
+        lines[#lines + 1] = "-- log lines about the talent view:"
+        for _, l in ipairs(MMTDB.debuglog or {}) do
+            if l:find("talent view", 1, true) or l:find("InspectUnit", 1, true) then lines[#lines + 1] = l end
+        end
+        ns.ShowText("MMT talent view report", table.concat(lines, "\n"))
     elseif sub == "name" then
         if rest == "" then ns.Print("Usage: /mmt debug name First Last") return end
         local bare = ns.StripRealm(rest)
@@ -193,6 +229,7 @@ function ns.HandleDebugCommand(arg)
         ns.Print("/mmt debug dump - copyable report (identity, group, layer, team, trade, log)")
         ns.Print("/mmt debug log | clear | chat - show log, clear it, print lines live to chat")
         ns.Print("/mmt debug name <text> - test how a typed name is understood")
+        ns.Print("/mmt debug talents - what the game offers to view talents (for the XP window's Ctrl-click)")
         ns.Print("/mmt ping - whisper all team members (3 name spellings) and show which one answers")
     end
 end
