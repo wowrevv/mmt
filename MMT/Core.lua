@@ -4,7 +4,7 @@
 local ADDON, ns = ...
 _G.MMT = ns
 ns.title = "MMT"
-ns.version = "0.9.5"
+ns.version = "0.9.12"
 ns.prefix = "MMT"
 ns.LOGO = "Interface\\AddOns\\MMT\\Media\\Logo"   -- the MMT mark (Media/Logo.tga)
 ns.ICON = "Interface\\AddOns\\MMT\\Media\\Icon"   -- the mark on a dark tile (Media/Icon.tga)
@@ -370,6 +370,9 @@ end
 function ns.NameFromGUID(guid, fallback)
     if guid then
         local _, _, _, _, _, first, last = ns.Safe(GetPlayerInfoByGUID, guid)
+        -- a player of another realm comes as "First Last" plus that realm:
+        -- the name already holds the last name, the realm is not part of it
+        if first and first:find(" ", 1, true) then return first end
         if first and last and last ~= "" and ns.NormKey(last) ~= ns.NormKey(OwnRealm()) then
             return first .. " " .. last
         end
@@ -398,7 +401,12 @@ local handlers = {}
 function ns.On(event, fn)
     if not handlers[event] then
         handlers[event] = {}
-        frame:RegisterEvent(event)
+        -- events this client doesn't know are skipped (e.g. classic-only ones)
+        local valid = not (C_EventUtils and C_EventUtils.IsEventValid) or C_EventUtils.IsEventValid(event)
+        if valid then
+            local ok = pcall(frame.RegisterEvent, frame, event)
+            if not ok then ns.Debug("event %s not available on this client", event) end
+        end
     end
     table.insert(handlers[event], fn)
 end

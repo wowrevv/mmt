@@ -497,8 +497,14 @@ local function Draw()
     local header
     if cfg.showHeader then
         i = i + 1
+        -- filters that hide quests are named in the header
+        local hidden = 0
+        if cfg.onlyWatched then
+            for _, id in ipairs(mod.ownOrder or {}) do if not mod.ownWatched[id] then hidden = hidden + 1 end end
+        end
         header = { kind = "header", text = ("Quests  %s%d/%d|r"):format(GREY, ownCount, MaxQuests())
-            .. (mod.activeFocus and ("  " .. GREY .. "(" .. mod.activeFocus .. ")|r") or ""),
+            .. (mod.activeFocus and ("  " .. GREY .. "(only " .. mod.activeFocus .. ")|r") or "")
+            .. (hidden > 0 and ("  " .. GREY .. "(" .. hidden .. " untracked hidden)|r") or ""),
             allCollapsed = mod.AllCollapsed(zones) }
         y = y + FillRow(Row(i), header, y, width) + 2
     end

@@ -165,7 +165,7 @@ local function Scan()
     -- (stun, fear, charm, incapacitate; not roots)
     if not best and (not count or unreadable) and HasFullControl and cfg.stun then
         local full = Plain(HasFullControl())
-        if full == false and not (UnitOnTaxi and UnitOnTaxi("player")) and not UnitIsDeadOrGhost("player") then
+        if full == false and not (UnitOnTaxi and ns.Safe(UnitOnTaxi, "player")) and not ns.Safe(UnitIsDeadOrGhost, "player") then
             best = "X"
         end
     end

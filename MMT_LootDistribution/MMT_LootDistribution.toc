@@ -1,7 +1,7 @@
 ## Interface: 16001
 ## Title: MMT - Loot Distribution
 ## Notes: MMT module: sets the group loot method automatically and, as master looter, gives loot to team members by their roles.
-## Version: 1.2.1
+## Version: 1.2.6
 ## Author: bnetworking
 ## X-Repository: https://github.com/bnetworking/MMT
 ## X-License: GPL-3.0

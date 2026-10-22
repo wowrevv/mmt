@@ -65,6 +65,13 @@ ns.defaults = {
         },
     },
 
+    -- flight paths with the team (Taxi.lua)
+    taxi = {
+        enabled = true,   -- take the flight path a team member picks (flight map open here)
+        report  = true,   -- chat line when following a flight
+        tellLeader = true, -- the leader's chat says who followed (or couldn't)
+    },
+
     -- privacy (Privacy.lua): how characters are shown
     privacy = {
         nameMode    = "FIRST",   -- FIRST | LAST | FULL | CLASS ("Druid 1") | SLOT ("Slot 1"); everywhere in MMT
@@ -97,8 +104,17 @@ ns.defaults = {
     shiftBypass = true,
     -- quest settings moved to the Quest Tracker module (profile.quests of older
     -- profiles is copied over by the module once)
-    gossip   = { vendor = true, dialog = true },
-    merchant = { sellGrey = true, repair = true, guildRepair = false, report = true, moneyFormat = "text" },
+    gossip   = { vendor = true, taxi = true, dialog = true },
+    merchant = { sellGrey = true, repair = true, guildRepair = false, report = true, tellLeader = true, moneyFormat = "text",
+                 sellRole = "", neverRole = "",          -- sell list / never-sell list (role names)
+                 buy = false, buyList = {} },            -- buy list: { itemID, name, count }
+    mail     = { enabled = true, goldTo = "", keepGold = 100 },     -- mailbox button: role items to the team, gold above keepGold
+    gbank    = { enabled = true, role = "", tab = 1, gold = false, keepGold = 100 },   -- guild bank button
+    -- automations
+    mount    = { mount = true, dismount = true },               -- with the leader
+    death    = { release = true, revive = true,                 -- team buttons under the death / corpse dialogs
+                 acceptRes = { team = true, friends = false, guild = false, anyone = false },
+                 acceptSummon = { team = true, friends = false, guild = false, anyone = false } },
     invites  = { friends = true, bnet = true, guild = true, team = true, whisper = true, keyword = "mybox" },
     camera   = { enabled = true, factor = 2.6 },
     distance = {

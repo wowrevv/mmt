@@ -439,6 +439,25 @@ function ns.SendAlert(msg, prefix)
     end
 end
 
+-- Notes for the leader's chat (flights taken, items sold, repairs): the FTL
+-- leader, or the group leader when no FTL leader is known. Returns "self"
+-- (nothing sent) when this character is that leader.
+function ns.IsNoticeLeaderHere()
+    local leader = ns.FTLLeader and ns.FTLLeader()
+    if leader then return ns.IsSelf(leader) end
+    if IsInGroup() then return UnitIsGroupLeader("player") and true or false end
+    return true
+end
+
+function ns.TellLeader(msg)
+    if not ns.db then return end
+    local leader = ns.FTLLeader and ns.FTLLeader()
+    if leader then return ns.SendToLeader(msg, "NORMAL") end
+    if ns.IsNoticeLeaderHere() then return "self" end
+    ns.SendToTeam(msg, true, "NORMAL")   -- each receiver checks whether it is the group leader
+    return true
+end
+
 function ns.BroadcastXP(onlyOnline)
     if not ns.db then return end
     ns.SendToTeam(ns.BuildXPMessage(), onlyOnline, "NORMAL")

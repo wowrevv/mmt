@@ -557,6 +557,62 @@ ns.RegisterPage("xp", "XP Window", function(page)
 end)
 
 ---------------------------------------------------------------------------
+-- Distance window format: small side window next to the settings window
+---------------------------------------------------------------------------
+local distanceFormat
+function ns.ToggleDistanceFormat(window)
+    if distanceFormat and distanceFormat:IsShown() then distanceFormat:Hide() return end
+    if not distanceFormat then
+        local f = CreateFrame("Frame", "MMTDistanceFormatFrame", window)   -- scales and hides with the settings window
+        f:SetFrameStrata(window:GetFrameStrata())
+        f:SetFrameLevel(window:GetFrameLevel() + 50)
+        f:EnableMouse(true)
+        f:SetClampedToScreen(true)
+        UI.Fill(f, 0.05, 0.05, 0.06, 0.96)
+        UI.Border(f, 0.22, 0.22, 0.24, 1)
+        f.widgets = {}
+        local title = UI.Label(f, "Distance window format", "GameFontNormal")
+        title:SetPoint("TOPLEFT", 16, -14)
+        local close = UI.TextButton(f, "x", function() f:Hide() end, 20)
+        close:SetPoint("TOPRIGHT", -8, -8)
+
+        local C = UI.Column(f, 16, -40, COL_W)
+        local gfo, sfo = Opt("distance", "font")
+        C:Cycle("Font", function()
+            local l = {}
+            for _, font in ipairs(ns.fonts) do l[#l + 1] = { value = font.name, text = font.name } end
+            return l
+        end, gfo, sfo)
+        local go, so = Opt("distance", "outline")
+        C:Cycle("Outline", {
+            { value = "NONE", text = "None" },
+            { value = "OUTLINE", text = "Thin" },
+            { value = "THICKOUTLINE", text = "Thick" },
+        }, go, so)
+        local ga, sa = Opt("distance", "align")
+        C:Cycle("Alignment", {
+            { value = "LEFT", text = "Left" },
+            { value = "CENTER", text = "Center" },
+            { value = "RIGHT", text = "Right" },
+        }, ga, sa)
+        local gz, sz = Opt("distance", "size")
+        C:Slider("Font size", 8, 32, 1, gz, sz)
+        local gw, sw = Opt("distance", "width")
+        C:Slider("Width", 40, 250, 5, gw, sw)
+        local gb, sb = Opt("distance", "bgAlpha")
+        C:Slider("Background opacity", 0, 1, 0.05, gb, sb, "%.2f")
+        f:SetSize(COL_W + 32, -C.y + 12)
+        f:SetScript("OnShow", function(self) for _, w in ipairs(self.widgets) do w.Refresh() end end)
+        UI.CloseOnEscape(f)
+        distanceFormat = f
+    end
+    distanceFormat:ClearAllPoints()
+    distanceFormat:SetPoint("TOPLEFT", window, "TOPRIGHT", 6, 0)
+    distanceFormat:Show()
+    for _, w in ipairs(distanceFormat.widgets) do w.Refresh() end
+end
+
+---------------------------------------------------------------------------
 -- Alerts: follow and crowd control
 ---------------------------------------------------------------------------
 ns.RegisterPage("alerts", "Alerts", function(page)
@@ -755,6 +811,9 @@ ns.RegisterPage("automations", "Automations", function(page)
     local gv, sv = Opt("gossip", "vendor")
     L:Check("Go straight to the vendor", gv, sv,
         "Opens the vendor pane even when the NPC has other options, e.g. an innkeeper.")
+    local gtx, stx = Opt("gossip", "taxi")
+    L:Check("Go straight to the flight map", gtx, stx,
+        "At a flight master, picks \"I need a ride\" so the flight map opens at once. With \"Take flight paths with the team\" the team members then follow you without clicking.")
     local gdl, sdl = Opt("gossip", "dialog")
     L:Check("Click through NPC dialogs", gdl, sdl,
         "When an NPC has no quests and only plain dialog lines, MMT picks them one after another to advance the conversation. Lines that could cost gold, teleport, train, bind your hearthstone or start a fight are left to you, and NPCs with any other option (vendor, trainer, flights, ...) stay manual.")
@@ -763,22 +822,6 @@ ns.RegisterPage("automations", "Automations", function(page)
         function(v) ns.db.shiftBypass = v end,
         "Hold Shift while an NPC window opens to keep that page manual. Pick an option without Shift and the next page is automated again.")
     L:Note("Quest automation (accept, turn in, share) is in the Quest Tracker module.")
-
-    L:Header("Vendor")
-    L:Check("Sell grey items", Opt("merchant", "sellGrey"))
-    L:Check("Repair automatically", Opt("merchant", "repair"))
-    local gg, sg = Opt("merchant", "guildRepair")
-    L:Check("Use guild funds if allowed", gg, sg, "Falls back to your own gold.")
-    L:Check("Print results to chat", Opt("merchant", "report"))
-    local gtr, str = Opt("trade", "enabled")
-    L:Check("Fill trades from role rules", gtr, str,
-        "When you open a trade with a team member, the items their roles ask for go into the trade window. Same switch as on the Roles tab.")
-    local gm, sm = Opt("merchant", "moneyFormat")
-    L:Cycle("Money format", {
-        { value = "text",  text = "1 gold 2 silver" },
-        { value = "short", text = "1g 2s 3c" },
-        { value = "coins", text = "Coin icons" },
-    }, gm, sm)
 
     L:Header("Group invites")
     L:Check("Accept from team members", Opt("invites", "team"))
@@ -807,6 +850,40 @@ ns.RegisterPage("automations", "Automations", function(page)
     table.insert(page.widgets, keyword)
     L:Add(keyword, UI.ROW + 2, 24)
 
+    L:Header("When you die")
+    local grl, srl = Opt("death", "release")
+    L:Check("Release as team", grl, srl,
+        "When a character dies, a \"Release as team\" button appears under the game's death dialog on every dead character. Clicking it releases every dead team member. It lists who is dead or a ghost.")
+    local grv, srv = Opt("death", "revive")
+    L:Check("Revive as team", grv, srv,
+        "When a ghost reaches its corpse, a \"Revive as team\" button appears under the game's dialog. Clicking it revives every ghost that is at its corpse; one whose corpse still has a delay revives when it ends; one that isn't at its corpse says so. The list shows who can revive now.")
+
+    L:Header("Accept automatically")
+    -- sources x (resurrections, summons): any combination
+    local gridY = L.y
+    local resLabel = UI.Label(page, "Resurrections")
+    resLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 110, gridY)
+    resLabel:SetTextColor(0.6, 0.6, 0.6)
+    local sumLabel = UI.Label(page, "Summons")
+    sumLabel:SetPoint("TOPLEFT", page, "TOPLEFT", 196, gridY)
+    sumLabel:SetTextColor(0.6, 0.6, 0.6)
+    L:Space(16)
+    local SOURCES = { { "team", "From team" }, { "friends", "From friends" }, { "guild", "From guild" }, { "anyone", "From anyone" } }
+    for _, src in ipairs(SOURCES) do
+        local key, text = src[1], src[2]
+        local label = UI.Label(page, text)
+        label:SetPoint("TOPLEFT", page, "TOPLEFT", 0, L.y - 4)
+        local res = UI.Check(page, 24, "", function() return ns.db.death.acceptRes[key] end,
+            function(v) ns.db.death.acceptRes[key] = v end,
+            "Accept resurrections " .. text:lower() .. ".")
+        res:SetPoint("TOPLEFT", page, "TOPLEFT", 126, L.y)
+        local sum = UI.Check(page, 24, "", function() return ns.db.death.acceptSummon[key] end,
+            function(v) ns.db.death.acceptSummon[key] = v end,
+            "Accept warlock summons " .. text:lower() .. ".")
+        sum:SetPoint("TOPLEFT", page, "TOPLEFT", 204, L.y)
+        L:Space(UI.ROW)
+    end
+
     local R = UI.Column(page, COL2_X, 0, COL_W)
     R:Header("Camera")
     R:Check("Maximum camera distance", Opt("camera", "enabled"))
@@ -814,42 +891,170 @@ ns.RegisterPage("automations", "Automations", function(page)
     R:Slider("Zoom factor", 1, 2.6, 0.1, gf, sf, "%.1f")
 
     R:Header("Distance window")
-    R:Check("Show window", Opt("distance", "enabled"))
+    local gde, sde = Opt("distance", "enabled")
+    R:Check("Show window", gde, sde,
+        "Shows a small window with distance information to your target. Mostly useful for hunters that want to avoid their deadzone.")
     R:Check("Lock (click-through)", Opt("distance", "locked"))
     local gh, sh = Opt("distance", "hideNoTarget")
     R:Check("Hide without target", gh, sh, "Only applies while the window is locked.")
     local gc, sc = Opt("distance", "colorize")
     R:Check("Colour by distance", gc, sc, "Green melee, yellow up to 30, orange up to 40, red beyond.")
-    local gfo, sfo = Opt("distance", "font")
-    R:Cycle("Font", function()
-        local l = {}
-        for _, f in ipairs(ns.fonts) do l[#l + 1] = { value = f.name, text = f.name } end
-        return l
-    end, gfo, sfo)
-    local go, so = Opt("distance", "outline")
-    R:Cycle("Outline", {
-        { value = "NONE", text = "None" },
-        { value = "OUTLINE", text = "Thin" },
-        { value = "THICKOUTLINE", text = "Thick" },
-    }, go, so)
-    local ga, sa = Opt("distance", "align")
-    R:Cycle("Alignment", {
-        { value = "LEFT", text = "Left" },
-        { value = "CENTER", text = "Center" },
-        { value = "RIGHT", text = "Right" },
-    }, ga, sa)
-    local gz, sz = Opt("distance", "size")
-    R:Slider("Font size", 8, 32, 1, gz, sz)
-    local gw, sw = Opt("distance", "width")
-    R:Slider("Width", 40, 250, 5, gw, sw)
-    local gb, sb = Opt("distance", "bgAlpha")
-    R:Slider("Background opacity", 0, 1, 0.05, gb, sb, "%.2f")
+    R:Button("Format window", function() ns.ToggleDistanceFormat(page:GetParent()) end)
     R:Button("Reset window position", function() ns.ResetDistancePosition() end)
+
+    R:Header("Flight paths")
+    local gt, st = Opt("taxi", "enabled")
+    R:Check("Take flight paths with the team", gt, st,
+        "When a team member picks a destination at a flight master, every team member that is talking to a flight master too (flight map open, or opened within 5 seconds) flies to the same destination. Needs MMT on every client.")
+    R:Check("Print to chat", Opt("taxi", "report"))
+    local gtl, stl = Opt("taxi", "tellLeader")
+    R:Check("Tell the leader", gtl, stl, "The leader's chat says who took the flight too, and who couldn't (FTL leader, or the group leader without one).")
+
+    R:Header("Mounts")
+    local gmo, smo = Opt("mount", "mount")
+    R:Check("Mount up with the leader", gmo, smo,
+        "When the leader (FTL leader, or the group leader without one) mounts, every team member nearby mounts too: the same mount if it has it, else one of the same kind, else a random favourite. Hold Shift while mounting to ride alone.")
+    local gdm, sdm = Opt("mount", "dismount")
+    R:Check("Dismount with the leader", gdm, sdm,
+        "When the leader dismounts, every team member dismounts too, never in the air. Hold Shift while dismounting to do it alone.")
 end)
 
 ---------------------------------------------------------------------------
 -- Profiles
 ---------------------------------------------------------------------------
+---------------------------------------------------------------------------
+-- Trade / Mail / Vendor
+---------------------------------------------------------------------------
+-- dropdown values: "none" plus every role
+local function RoleChoices()
+    local l = { { value = "", text = "None" } }
+    local names = {}
+    for name in pairs(ns.db.roles) do names[#names + 1] = name end
+    table.sort(names)
+    for _, name in ipairs(names) do l[#l + 1] = { value = name, text = name } end
+    return l
+end
+
+local function MemberChoices()
+    local l = { { value = "", text = "Nobody" } }
+    for _, key in ipairs(ns.SortedMembers()) do l[#l + 1] = { value = key, text = ns.ShownName(key) } end
+    return l
+end
+
+ns.RegisterPage("trade", "Trade / Mail / Vendor", function(page)
+    local L = UI.Column(page, 0, 0, COL_W)
+    L:Header("Vendor")
+    L:Check("Sell grey items", Opt("merchant", "sellGrey"))
+    L:Check("Repair automatically", Opt("merchant", "repair"))
+    local gg, sg = Opt("merchant", "guildRepair")
+    L:Check("Use guild funds if allowed", gg, sg, "Falls back to your own gold.")
+    L:Check("Print results to chat", Opt("merchant", "report"))
+    local gml, sml = Opt("merchant", "tellLeader")
+    L:Check("Tell the leader", gml, sml, "Items sold and repairs of the other characters are posted in the leader's chat (FTL leader, or the group leader without one).")
+    L:Header("Trade")
+    local gtr, str = Opt("trade", "enabled")
+    L:Check("Fill trades from role rules", gtr, str,
+        "When you open a trade with a team member, the items their roles ask for go into the trade window. Same switch as on the Roles tab.")
+    local gm, sm = Opt("merchant", "moneyFormat")
+    L:Cycle("Money format", {
+        { value = "text",  text = "1 gold 2 silver" },
+        { value = "short", text = "1g 2s 3c" },
+        { value = "coins", text = "Coin icons" },
+    }, gm, sm)
+
+
+    L:Header("Sell list")
+    local gsr, ssr = Opt("merchant", "sellRole")
+    L:Cycle("Also sell items of role", RoleChoices, gsr, ssr)
+    local gnr, snr = Opt("merchant", "neverRole")
+    L:Cycle("Never sell items of role", RoleChoices, gnr, snr)
+    L:Note("Lists are roles from the Roles page: create e.g. \"Sell\" and \"Keep\" with their items and rules (item, quality, Bind on Equip, item group). The never-sell list wins, greys included.")
+
+    -- right: buy list, mail, guild bank ------------------------------------
+    local R = UI.Column(page, COL2_X, 0, COL_W)
+    R:Header("Buy list")
+    local gby, sby = Opt("merchant", "buy")
+    R:Check("Buy up to the count at vendors", gby, sby,
+        "At a vendor that sells them, the items below are bought until you carry the count (gold only). Each character buys for itself.")
+    local function BuyList() ns.db.merchant.buyList = ns.db.merchant.buyList or {} return ns.db.merchant.buyList end
+    local list = List(page, COL_W, 4, 20, function(parent, i)
+        local row = CreateFrame("Frame", nil, parent)
+        RowBackground(row, i)
+        row.name = UI.Label(row, "")
+        row.name:SetPoint("LEFT", 6, 0)
+        row.name:SetWidth(COL_W - 90)
+        row.name:SetJustifyH("LEFT")
+        row.name:SetWordWrap(false)
+        row.count = UI.Label(row, "")
+        row.count:SetPoint("RIGHT", -30, 0)
+        row.del = UI.TextButton(row, "x", function()
+            table.remove(BuyList(), row.index)
+            page.OnRefresh()
+        end)
+        row.del:SetPoint("RIGHT", -4, 0)
+        return row
+    end, function(row, entry, index)
+        row.index = index
+        row.name:SetText(entry.name or ("item " .. tostring(entry.itemID)))
+        row.count:SetText(tostring(entry.count))
+    end)
+    R:Add(list, 4 * 20 + 4)
+    local buyStatus
+    local countBox
+    local itemBox = UI.EditBox(page, COL_W - 96, "Shift-click an item", function(text, box)
+        local rule = ns.RuleFromText(text)
+        local n = tonumber(countBox:GetText()) or 0
+        if not (rule and rule.itemID) then buyStatus.Show_("Item not known: use an item link or its ID.", true) return end
+        if n <= 0 then buyStatus.Show_("Enter how many to carry.", true) return end
+        local entries = BuyList()
+        for _, e in ipairs(entries) do
+            if e.itemID == rule.itemID then e.count = n; box:SetText(""); page.OnRefresh(); return end
+        end
+        entries[#entries + 1] = { itemID = rule.itemID, name = rule.name, count = n }
+        box:SetText("")
+        box:ClearFocus()
+        page.OnRefresh()
+    end)
+    UI.AcceptItemLinks(itemBox)
+    UI.Tooltip(itemBox, "Add to the buy list", "Click into the field, then shift-click an item (bags, vendor, chat link) or type its ID. Enter the count beside it, then Add.")
+    R:Add(itemBox, 0)
+    countBox = UI.EditBox(page, 40, "20", function() itemBox:GetScript("OnEnterPressed")(itemBox) end)
+    countBox:SetNumeric(true)
+    countBox:SetPoint("LEFT", itemBox, "RIGHT", 6, 0)
+    local add = UI.Button(page, 44, "Add", function() itemBox:GetScript("OnEnterPressed")(itemBox) end)
+    add:SetPoint("LEFT", countBox, "RIGHT", 6, 0)
+    R:Space(UI.ROW + 2)
+    buyStatus = StatusLine(page)
+    buyStatus:SetWidth(COL_W)
+    R:Add(buyStatus, 16)
+
+    R:Header("Mail")
+    local gme, sme = Opt("mail", "enabled")
+    R:Check("\"Mail to team\" button at the mailbox", gme, sme,
+        "Sends every item in your bags that another team member's role wants to that member (team order; items your own role wants stay), 12 items per mail.")
+    local ggt, sgt = Opt("mail", "goldTo")
+    R:Cycle("Also mail gold to", MemberChoices, ggt, sgt)
+    local gkg, skg = Opt("mail", "keepGold")
+    R:Slider("Keep gold", 0, 1000, 10, gkg, skg)
+
+    R:Header("Guild bank")
+    local gge, sge = Opt("gbank", "enabled")
+    R:Check("\"Deposit\" button at the guild bank", gge, sge,
+        "Puts the items of the role below into the chosen tab, and optionally the gold above the amount to keep.")
+    local ggr, sgr = Opt("gbank", "role")
+    R:Cycle("Deposit items of role", RoleChoices, ggr, sgr)
+    local gtb, stb = Opt("gbank", "tab")
+    R:Slider("Tab", 1, 8, 1, gtb, stb)
+    local ggg, sgg = Opt("gbank", "gold")
+    R:Check("Also deposit gold above \"Keep gold\"", ggg, sgg)
+    local gbk, sbk = Opt("gbank", "keepGold")
+    R:Slider("Keep gold (guild bank)", 0, 1000, 10, gbk, sbk)
+
+    page.OnRefresh = function()
+        list:Render(BuyList())
+    end
+end)
+
 ns.RegisterPage("profiles", "Profiles", function(page)
     local col = UI.Column(page, 0, 0, PAGE_W)
     local copySource

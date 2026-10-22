@@ -1,4 +1,9 @@
--- MMT: sell grey items and repair when a vendor opens.
+-- MMT: at a vendor: repair, sell grey items and the items of the sell list,
+-- never the items of the never-sell list, and buy the items of the buy list
+-- up to their count (Trade / Mail / Vendor page).
+--
+-- The sell and never-sell lists are roles (Roles page): all their items and
+-- rules (item, quality, Bind on Equip, item group) count.
 
 local _, ns = ...
 
@@ -13,12 +18,28 @@ local function SellPrice(info)
     return price or 0
 end
 
+-- role of the list, or nil when none is chosen / the role was deleted
+local function ListRole(name)
+    if name and name ~= "" and ns.db.roles[name] then return name end
+end
+
+-- should this bag item be sold?
+local function ToSell(info)
+    local m = ns.db.merchant
+    local link = info.hyperlink or info.itemID
+    local never = ListRole(m.neverRole)
+    if never and ns.RoleWantsItem(never, link) then return false end
+    if m.sellGrey and info.quality == POOR then return true end
+    local sell = ListRole(m.sellRole)
+    return sell ~= nil and ns.RoleWantsItem(sell, link)
+end
+
 local function CollectJunk()
     local list = {}
     for bag = 0, ns.BAGS do
         for slot = 1, (C_Container.GetContainerNumSlots(bag) or 0) do
             local info = C_Container.GetContainerItemInfo(bag, slot)
-            if info and info.quality == POOR and not info.hasNoValue and not info.isLocked then
+            if info and not info.hasNoValue and not info.isLocked and ToSell(info) then
                 local price = SellPrice(info)
                 if price > 0 then
                     list[#list + 1] = {
@@ -33,9 +54,17 @@ local function CollectJunk()
     return list
 end
 
+-- tell the leader's chat (another character's client)
+local function Tell(msg)
+    if ns.db.merchant.tellLeader and ns.TellLeader then ns.TellLeader(msg) end
+end
+
 local function Report(count, value)
-    if count == 0 or not ns.db.merchant.report then return end
-    ns.Print("%d %s sold, %s made.", count, count == 1 and "item" or "items", ns.FormatMoney(value))
+    if count == 0 then return end
+    if ns.db.merchant.report then
+        ns.Print("%d %s sold, %s made.", count, count == 1 and "item" or "items", ns.FormatMoney(value))
+    end
+    Tell(("NOTE:SELL:%d:%d"):format(count, value))
 end
 
 local function SellGrey()
@@ -74,24 +103,99 @@ local function Repair()
         if limit == -1 or limit >= cost then
             RepairAllItems(true)
             if m.report then ns.Print("Repaired for %s (guild bank).", ns.FormatMoney(cost)) end
+            Tell(("NOTE:REPAIR:%d:g"):format(cost))
             return
         end
     end
 
     if GetMoney() < cost then
         ns.Print("Not enough money to repair (%s needed).", ns.FormatMoney(cost))
+        Tell(("NOTE:REPAIR:%d:x"):format(cost))
         return
     end
     RepairAllItems()
     if m.report then ns.Print("Repaired for %s.", ns.FormatMoney(cost)) end
+    Tell(("NOTE:REPAIR:%d:o"):format(cost))
+end
+
+---------------------------------------------------------------------------
+-- Buy list: { itemID, name, count } bought up to count
+---------------------------------------------------------------------------
+local function MerchantItem(i)
+    if C_MerchantFrame and C_MerchantFrame.GetItemInfo then
+        local info = C_MerchantFrame.GetItemInfo(i)
+        if info then return info.name, info.price, info.stackCount, info.numAvailable, info.hasExtendedCost end
+    end
+    if GetMerchantItemInfo then
+        local name, _, price, stack, available, _, _, extended = GetMerchantItemInfo(i)
+        return name, price, stack, available, extended
+    end
+end
+
+local function ItemCount(id)
+    local count = (C_Item and C_Item.GetItemCount and C_Item.GetItemCount(id)) or (GetItemCount and GetItemCount(id)) or 0
+    return count
+end
+
+local function BuyList()
+    local m = ns.db.merchant
+    if not m.buy then return end
+    local bought = {}
+    for _, entry in ipairs(m.buyList or {}) do
+        local id, want = entry.itemID, entry.count or 0
+        local need = id and (want - ItemCount(id)) or 0
+        if need > 0 then
+            for i = 1, (GetMerchantNumItems and GetMerchantNumItems() or 0) do
+                if GetMerchantItemID and GetMerchantItemID(i) == id then
+                    local name, price, stack, available, extended = MerchantItem(i)
+                    stack = (stack and stack > 0) and stack or 1
+                    if extended then break end   -- costs something other than gold
+                    if available and available >= 0 then need = math.min(need, available * stack) end
+                    local cost = math.ceil(need / stack) * (price or 0)
+                    if cost > GetMoney() then
+                        ns.Print("Not enough money to buy %d x %s.", need, name or ("item " .. id))
+                        break
+                    end
+                    -- the game sells at most one max stack per call
+                    local max = (GetMerchantItemMaxStack and GetMerchantItemMaxStack(i)) or need
+                    local left = need
+                    while left > 0 do
+                        local n = math.min(left, max)
+                        pcall(BuyMerchantItem, i, n)
+                        left = left - n
+                    end
+                    bought[#bought + 1] = ("%d x %s"):format(need, name or ("item " .. id))
+                    break
+                end
+            end
+        end
+    end
+    if #bought > 0 and m.report then ns.Print("Bought %s.", table.concat(bought, ", ")) end
 end
 
 ns.On("MERCHANT_SHOW", function()
     merchantOpen = true
-    if ns.db.merchant.repair then Repair() end
-    if ns.db.merchant.sellGrey then SellGrey() end
+    local m = ns.db.merchant
+    if m.repair then Repair() end
+    if m.sellGrey or ListRole(m.sellRole) then SellGrey() end
+    if m.buy then C_Timer.After(0.5, function() if merchantOpen then BuyList() end end) end
 end)
 
 ns.On("MERCHANT_CLOSED", function()
     merchantOpen = false
+end)
+
+-- the leader's client: notes from the team
+ns.Listen("TEAM_MESSAGE", function(key, sender, text)
+    local kind, a, b = text:match("^NOTE:(%u+):(%d+):?(%w*)")
+    if not kind or not ns.IsNoticeLeaderHere() then return end
+    local who = ns.ShownName(key)
+    if kind == "SELL" then
+        local count = tonumber(a)
+        ns.Print("%s sold %d grey %s for %s.", who, count, count == 1 and "item" or "items", ns.FormatMoney(tonumber(b) or 0))
+    elseif kind == "REPAIR" then
+        local cost = ns.FormatMoney(tonumber(a))
+        if b == "x" then ns.Print("|cffff6666%s doesn't have enough money to repair (%s needed).|r", who, cost)
+        else ns.Print("%s repaired for %s%s.", who, cost, b == "g" and " (guild bank)" or "") end
+    end
 end)

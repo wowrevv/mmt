@@ -1,5 +1,6 @@
--- MMT: gossip goes straight to the vendor pane, and dialog-only NPCs are
--- clicked through (options that only advance the conversation).
+-- MMT: gossip goes straight to the vendor pane or the flight map, and
+-- dialog-only NPCs are clicked through (options that only advance the
+-- conversation).
 --
 -- Quest automation (accept, turn in, announce, share) lives in the Quest
 -- Tracker module (MMT_QuestTracker). It adds a gossip handler that runs
@@ -16,6 +17,20 @@ end
 
 local VENDOR_ICON = 132060 -- Interface\GossipFrame\VendorGossipIcon
 local CHAT_ICON = 132053   -- Interface\GossipFrame\GossipGossipIcon (plain dialog line)
+local TAXI_ICON = 132057   -- Interface\GossipFrame\TaxiGossipIcon (flight master)
+
+-- the flight master's "I need a ride" line (icon, or the usual texts)
+local TAXI_TEXTS = { "i need a ride", "show me where i can fly", "i'd like to fly", "where can i fly" }
+local function IsTaxiOption(opt)
+    if opt.icon == TAXI_ICON or opt.type == "taxi" then return true end
+    local name = opt.name
+    if type(name) ~= "string" or ns.IsSecret(name) then return false end
+    name = name:lower()
+    for _, t in ipairs(TAXI_TEXTS) do
+        if name:find(t, 1, true) then return true end
+    end
+    return false
+end
 
 -- Dialog options are only picked when the text has none of these words:
 -- they can cost gold, change the character or start something big.
@@ -94,6 +109,15 @@ ns.On("GOSSIP_SHOW", function()
     local options = C_GossipInfo.GetOptions() or {}
     for _, opt in ipairs(options) do
         ns.Debug("Gossip option: %s (icon %s, id %s)", tostring(opt.name), tostring(opt.icon), tostring(opt.gossipOptionID))
+    end
+    if ns.db.gossip.taxi then
+        for _, opt in ipairs(options) do
+            if IsTaxiOption(opt) then
+                ns.Debug("Gossip: flight master, opening the flight map")
+                C_GossipInfo.SelectOption(opt.gossipOptionID)
+                return
+            end
+        end
     end
     if ns.db.gossip.vendor then
         for _, opt in ipairs(options) do

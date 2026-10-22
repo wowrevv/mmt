@@ -198,6 +198,17 @@ function M.Report(_, add)
     add(("automation: acceptNPC=%s acceptShared=%s turnIn=%s skipTrivial=%s announce=%s autoShare=%s announceNoShare=%s abortTeam=%s announceStarter=%s"):format(
         tostring(M.db.acceptNPC), tostring(M.db.acceptShared), tostring(M.db.turnIn), tostring(M.db.skipTrivial),
         tostring(M.db.announce), tostring(M.db.autoShare), tostring(M.db.announceNoShare), tostring(M.db.abortTeam), tostring(M.db.announceStarter)))
+    local watchedN = 0
+    for _ in pairs(mod.ownWatched or {}) do watchedN = watchedN + 1 end
+    add(("tracker: onlyWatched=%s teamQuests=%s showMissing=%s focusZone=%s tracked=%d"):format(
+        tostring(M.db.onlyWatched), tostring(M.db.teamQuests), tostring(M.db.showMissing),
+        MMT.Repr(M.store.focusZone), watchedN))
+    for _, id in ipairs(mod.ownOrder or {}) do
+        local own = mod.AllData()[MMT.PlayerFull()]
+        local q = own and own.quests and own.quests[id]
+        add(("  own quest %s %s zone=%s tracked=%s"):format(tostring(id), MMT.Repr(q and q.title),
+            MMT.Repr(q and q.zone), tostring(mod.ownWatched and mod.ownWatched[id] or false)))
+    end
     for key, rec in pairs(mod.AllData()) do
         add(("quests %s: %d, hash %s, %s"):format(MMT.Repr(key), mod.QuestCount(rec), tostring(rec.hash), MMT.Ago(rec.time)))
     end

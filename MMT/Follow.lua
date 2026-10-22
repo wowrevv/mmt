@@ -19,6 +19,10 @@ local _, ns = ...
 
 ns.follow = {}   -- [teamKey] = { following, target (name), targetKey, broken, since, combatBreak }
 
+local function InCombat()
+    return (UnitAffectingCombat and ns.Safe(UnitAffectingCombat, "player")) or InCombatLockdown()
+end
+
 local function F(key)
     ns.follow[key] = ns.follow[key] or {}
     return ns.follow[key]
@@ -79,7 +83,9 @@ local function Stopped(key, why)
     if why == "t" then f.combatBreak = false return end   -- flight path ends follow for everybody
     local x = ns.db.xp
     if not x.followCheck then return end
-    if x.followIgnoreCombat and why == "c" then
+    -- in combat on either side: the break only counts if it lasts until
+    -- after combat (checked when combat ends here, see below)
+    if x.followIgnoreCombat and (why == "c" or InCombat()) then
         f.combatBreak = true                  -- reported later if still not following after combat
         ns.Fire("STATUS_CHANGED")
         return
@@ -107,9 +113,6 @@ end
 
 local function Send(msg) if ns.SendAlert then ns.SendAlert(msg) end end   -- leader first
 
-local function InCombat()
-    return (UnitAffectingCombat and UnitAffectingCombat("player")) or InCombatLockdown()
-end
 
 ns.On("AUTOFOLLOW_BEGIN", function(name)
     if ns.IsSecret(name) then name = nil end
@@ -123,7 +126,7 @@ ns.On("AUTOFOLLOW_END", function()
     if not own.following then return end
     own.following = false
     local why = ""
-    if UnitOnTaxi and UnitOnTaxi("player") then why = "t"
+    if UnitOnTaxi and ns.Safe(UnitOnTaxi, "player") then why = "t"
     elseif InCombat() then why = "c"; own.combatBreak = true end
     Send("FOL:0:" .. why)
     local me = ns.PlayerFull()
@@ -132,8 +135,12 @@ end)
 
 -- combat over and still not following again: now it counts as a break
 ns.On("PLAYER_REGEN_ENABLED", function()
-    if not own.combatBreak then return end
     C_Timer.After(ns.db.xp.followCombatDelay or 5, function()
+        if InCombat() then return end   -- the next fight started: checked when it ends
+        -- team members whose break fell into a fight (on their or this client)
+        for key, f in pairs(ns.follow) do
+            if f.combatBreak and not f.following and not ns.IsSelf(key) then Stopped(key, "") end
+        end
         if own.following or not own.combatBreak then return end
         own.combatBreak = false
         Send("FOL:0:")

@@ -22,7 +22,8 @@
 --    before Greed, token/chest rolls), each client rolls Need, Greed, Pass or
 --    leaves it manual according to your Roles, quest log objectives, bag
 --    reserve and unassigned-item rule, and auto-confirms Bind on Pickup rolls
---    that MMT initiated.
+--    that MMT initiated. Also supports passing on all rolls or enabling the
+--    game's "Pass on Loot" except on the group/FTL leader.
 
 local _, mod = ...
 local MMT = MMT
@@ -33,19 +34,23 @@ local M = MMT.NewModule({
     description = "Sets the group loot method and handles Master Loot and Group Loot rolls by roles.",
     sync = true,   -- /mmt sync <module> and the Sync button share M.db with the team
     defaults = {
-        autoMethod   = true,
-        method       = "master",   -- freeforall | roundrobin | group | needbeforegreed | master
-        threshold    = 2,          -- item quality (2 = Uncommon)
-        looter       = "LEADER",   -- master looter / group receiver: "LEADER" or a team key
-        byRoles      = true,
-        roleMode     = "ALL",      -- Group Loot when several members have the role: ALL | ORDER | RR
-        reserve      = 2,          -- free bag slots every member keeps
-        unassigned   = "LEAVE",    -- items no role wants: LEAVE | SELF | RR | GREED | NEED | PASS
-        rrNotice     = true,       -- chat line when an item without rule goes round robin
-        autoRoll     = true,       -- automated Group Loot / roll handling
-        rollBoP      = false,      -- allow generic role rules & unassigned rolls on Bind on Pickup
-        questRR      = true,       -- quest items: round robin (Master) / smart Need or Pass (Group)
-        report       = true,
+        autoMethod    = true,
+        outsiderGroup = false,     -- Group Loot while a player outside the team is in the group
+        method        = "master",  -- freeforall | roundrobin | group | needbeforegreed | master
+        threshold     = 2,         -- item quality (2 = Uncommon)
+        looter        = "LEADER",  -- master looter / group receiver: "LEADER" or a team key
+        byRoles       = true,
+        roleMode      = "ALL",     -- Group Loot when several members have the role: ALL | ORDER | RR
+        reserve       = 2,         -- free bag slots every member keeps
+        unassigned    = "LEAVE",   -- items no role wants: LEAVE | SELF | RR | GREED | NEED | PASS
+        rrNotice      = true,      -- chat line when an item without rule goes round robin
+        autoRoll      = true,      -- automated Group Loot / roll handling
+        rollBoP       = false,     -- allow generic role rules & unassigned rolls on Bind on Pickup
+        autoPass      = false,     -- pass on loot rolls (Need/Greed) ...
+        optOut        = false,     -- "Pass on Loot" (SetOptOutOfLoot) while in a group ...
+        passExcept    = "GROUP",   -- ... both except on the GROUP leader or the FTL leader
+        questRR       = true,      -- quest items: round robin (Master) / smart Need or Pass (Group)
+        report        = true,
     },
 })
 mod.M = M
@@ -168,12 +173,36 @@ function mod.TargetLooter()
     return not IsInGroup(), MMT.PlayerFull()
 end
 
+-- a player in the group who isn't in the team list
+function mod.HasOutsider()
+    if not IsInGroup() then return false end
+    local units = {}
+    if IsInRaid() then
+        for i = 1, (GetNumGroupMembers() or 0) do units[#units + 1] = "raid" .. i end
+    else
+        for i = 1, (GetNumSubgroupMembers() or 0) do units[#units + 1] = "party" .. i end
+    end
+    for _, unit in ipairs(units) do
+        if UnitExists(unit) and not UnitIsUnit(unit, "player") then
+            local name = MMT.NameFromGUID(MMT.Safe(UnitGUID, unit), MMT.Safe(UnitName, unit))
+            if name and name ~= "?" and not MMT.Resolve(name) then return true, name end
+        end
+    end
+    return false
+end
+
+-- the method to use now: Group Loot with an outsider (option), else the chosen one
+function mod.WantedMethod()
+    if M.db.outsiderGroup and mod.HasOutsider() then return "group" end
+    return M.db.method
+end
+
 -- force: apply even if this group/leader situation was handled already
 function mod.ApplyLootSettings(force)
     if not (M.enabled and M.db.autoMethod) then return false, "off" end
     if not IsLeader() then return false, "You need to be the group leader." end
     if InCombatLockdown() then return false, "Not in combat." end
-    local cfg = M.db
+    local cfg = setmetatable({ method = mod.WantedMethod() }, { __index = M.db })
     local current, partyIndex = mod.GetMethod()
     local masterName, masterKey = nil, nil
     if cfg.method == "master" then masterName, masterKey = mod.MasterLooterName() end
@@ -187,9 +216,18 @@ function mod.ApplyLootSettings(force)
     end
     if cfg.method ~= "freeforall" and (force or mod.GetThreshold() ~= cfg.threshold) then
         -- the game needs a moment after a method change before the threshold sticks
+        local want = cfg.threshold
         C_Timer.After(changed and 0.8 or 0, function()
-            local ok, err = SetThreshold(cfg.threshold)
-            M:Debug("SetLootThreshold(%s) -> %s %s", tostring(cfg.threshold), tostring(ok), tostring(err or ""))
+            local ok, err = SetThreshold(want)
+            M:Debug("SetLootThreshold(%s) -> %s %s", tostring(want), tostring(ok), tostring(err or ""))
+            -- check that the game kept it; set it once more if not
+            C_Timer.After(2, function()
+                local now = mod.GetThreshold()
+                if now ~= nil and now ~= want and IsLeader() then
+                    local ok2, err2 = SetThreshold(want)
+                    M:Debug("threshold is %s, not %s: set again -> %s %s", tostring(now), tostring(want), tostring(ok2), tostring(err2 or ""))
+                end
+            end)
         end)
         changed = true
     end
@@ -202,14 +240,17 @@ local function CheckGroup()
     if not (M.enabled and M.db.autoMethod) then return end
     if not IsInGroup() then handledFor = nil return end
     if not IsLeader() then handledFor = nil return end
-    local situation = tostring(GetNumGroupMembers()) .. (IsInRaid() and "R" or "P")
-    if handledFor then return end
-    handledFor = situation
+    local method = mod.WantedMethod()
+    -- an outsider joining or leaving changes the method: apply again
+    if handledFor and handledFor == method then return end
+    handledFor = method
     C_Timer.After(1, function()
         local ok, changed = mod.ApplyLootSettings(false)
         if ok and changed and M.db.report then
-            MMT.Print("Loot set to %s%s.", mod.METHOD_TEXT[M.db.method] or M.db.method,
-                M.db.method ~= "freeforall" and (" from " .. MMT.QualityName(M.db.threshold)) or "")
+            local m = mod.WantedMethod()
+            MMT.Print("Loot set to %s%s%s.", mod.METHOD_TEXT[m] or m,
+                m ~= "freeforall" and (" from " .. MMT.QualityName(M.db.threshold)) or "",
+                (m ~= M.db.method) and " (a player outside the team is in the group)" or "")
         end
     end)
 end
@@ -409,6 +450,7 @@ end
 local BLOCK_TIME = 600
 local blocked = {}   -- [itemID] = { [key] = time }
 local pending = {}   -- [slot] = { link, key }  (open loot window)
+local CloseAssignWindow   -- below
 local closing = {}   -- pending of the window that just closed
 
 local function ItemID(link) return tonumber(link:match("item:(%d+)")) or link end
@@ -418,7 +460,10 @@ local function IsBlocked(link, key)
     return t and (GetTime() - t) < BLOCK_TIME
 end
 
-M:On("LOOT_SLOT_CLEARED", function(slot) pending[slot] = nil; closing[slot] = nil end)
+M:On("LOOT_SLOT_CLEARED", function(slot)
+    pending[slot] = nil; closing[slot] = nil
+    C_Timer.After(0, CloseAssignWindow)
+end)
 
 local function CheckFailed()
     for slot, p in pairs(closing) do
@@ -495,6 +540,20 @@ NextRoundRobin = function(slot, link, planned)
 end
 
 local busy = false
+local handedOut = {}   -- [slot] = true: MMT gave this slot away in the open loot window
+
+-- Blizzard's master loot assignment window (opened by Auto Loot or a click):
+-- closed when its item was handed out by MMT or is gone; left open for
+-- items that stay manual (e.g. Bind on Pickup)
+CloseAssignWindow = function()
+    local f = _G.MasterLooterFrame
+    if not (f and f:IsShown()) then return end
+    local slot = f.slot or (_G.LootFrame and _G.LootFrame.selectedSlot)
+    if slot == nil or handedOut[slot] or not GetLootSlotLink(slot) then
+        f:Hide()
+        M:Debug("closed the master loot window (slot %s)", tostring(slot))
+    end
+end
 
 local function Plan(needOf)
     local cfg = M.db
@@ -538,7 +597,9 @@ local function Plan(needOf)
         C_Timer.After((i - 1) * 0.25, function()
             if busy and GetLootSlotLink(p.slot) == p.link then
                 pending[p.slot] = { link = p.link, key = p.key }
+                handedOut[p.slot] = true
                 GiveMasterLoot(p.slot, p.index)
+                C_Timer.After(0.2, CloseAssignWindow)
                 M:Debug("GiveMasterLoot(%d, %d) %s -> %s", p.slot, p.index, p.link, MMT.Repr(p.key))
                 if p.rr and cfg.rrNotice then
                     MMT.Print("%s |cffffd100is not part of any role or rule, so it was given round robin to|r %s|cffffd100.|r",
@@ -554,8 +615,25 @@ end
 
 local function Distribute()
     local cfg = M.db
-    if busy or not M.enabled or not (cfg.byRoles or cfg.questRR or cfg.unassigned == "RR") or not mod.IsMasterLooter() then return end
+    if busy or not M.enabled or not (cfg.byRoles or cfg.questRR or cfg.unassigned == "RR") then
+        M:Debug("loot window: not handled (busy=%s enabled=%s)", tostring(busy), tostring(M.enabled))
+        return
+    end
+    if not mod.IsMasterLooter() then
+        local method, partyIndex = mod.GetMethod()
+        M:Debug("loot window: not the master looter (method=%s partyML=%s)", tostring(method), tostring(partyIndex))
+        return
+    end
     busy = true
+    -- what the window holds (debug)
+    for slot = 1, GetNumLootItems() do
+        local link = GetLootSlotLink(slot)
+        local _, name, qty, _, quality, locked, isQuestItem = GetLootSlotInfo(slot)
+        local classID = link and select(6, ((C_Item and C_Item.GetItemInfoInstant) or GetItemInfoInstant)(link))
+        M:Debug("loot slot %d: %s x%s quality=%s locked=%s questFlag=%s class=%s type=%s", slot, tostring(link or name),
+            tostring(qty), tostring(quality), tostring(locked), tostring(isQuestItem), tostring(classID),
+            tostring(GetLootSlotType and GetLootSlotType(slot)))
+    end
     -- quest items in this corpse? ask the team first who still needs them
     local names, seen = {}, {}
     if cfg.questRR then
@@ -572,7 +650,13 @@ local function Distribute()
     end
 end
 
-M:On("LOOT_OPENED", function() wipe(pending) C_Timer.After(0.1, Distribute) end)
+M:On("LOOT_OPENED", function(autoLoot)
+    M:Debug("loot window opened: items=%d autoLoot=%s", GetNumLootItems() or 0, tostring(autoLoot))
+    wipe(pending)
+    wipe(handedOut)
+    C_Timer.After(0.1, Distribute)
+end)
+
 M:On("LOOT_CLOSED", function()
     busy = false
     -- hand-outs still not cleared a moment after the window closed were refused by the game
@@ -583,10 +667,18 @@ end)
 ---------------------------------------------------------------------------
 -- 3. Group loot & automated roll handling
 ---------------------------------------------------------------------------
+local ROLL_PASS = 0
 local ROLL_WORD = { [0] = PASS or "Pass", [1] = NEED or "Need", [2] = GREED or "Greed" }
 local CLAIM_RANK = { MANUAL = 3, NEED = 2, GREED = 1 }
 local autoRolls = {}   -- [rollID] = true for rolls initiated by MMT
 local retryRolls = {}  -- [rollID] = attempts
+
+function mod.KeepsRolls()
+    if M.db.passExcept == "FTL" then
+        return MMT.IsFTLLeader ~= nil and MMT.IsFTLLeader(MMT.PlayerFull()) or false
+    end
+    return UnitIsGroupLeader("player") and true or false
+end
 
 local function DoRoll(rollID, link, action, canNeed, canGreed, reason)
     if not action or action == "MANUAL" or action == "LEAVE" then return end
@@ -604,7 +696,8 @@ local function DoRoll(rollID, link, action, canNeed, canGreed, reason)
         return
     end
     autoRolls[rollID] = true
-    RollOnLoot(rollID, num)
+    local roll = RollOnLoot or (C_Loot and C_Loot.RollOnLoot)
+    if roll then roll(rollID, num) end
     M:Debug("RollOnLoot(%s, %d [%s]) %s (%s)", tostring(rollID), num, ROLL_WORD[num], link, tostring(reason or ""))
     if M.db.report then
         MMT.Print("%s on %s%s.", ROLL_WORD[num], link, reason and (" (" .. reason .. ")") or "")
@@ -711,6 +804,7 @@ end
 function mod.EvaluateRoll(rollID)
     local cfg = M.db
     if not (M.enabled and cfg and cfg.autoRoll) then return true end
+    if cfg.autoPass and not mod.KeepsRolls() then return true end
 
     local _, rollName, _, _, rollBoP, canNeed, canGreed = GetLootRollItemInfo(rollID)
     local link = GetLootRollItemLink(rollID)
@@ -796,6 +890,18 @@ local function RetryRoll(rollID)
 end
 
 M:On("START_LOOT_ROLL", function(rollID)
+    local cfg = M.db
+    if M.enabled and cfg and cfg.autoPass and rollID and not mod.KeepsRolls() then
+        local link = GetLootRollItemLink and GetLootRollItemLink(rollID)
+        C_Timer.After(0.2, function()
+            local roll = RollOnLoot or (C_Loot and C_Loot.RollOnLoot)
+            if not roll then return end
+            local ok, err = pcall(roll, rollID, ROLL_PASS)
+            M:Debug("pass on roll %s %s -> %s %s", tostring(rollID), tostring(link), tostring(ok), tostring(err or ""))
+            if ok and cfg.report and link then MMT.Print("Passed on %s.", link) end
+        end)
+        return
+    end
     if mod.EvaluateRoll(rollID) then return end
     if not retryRolls[rollID] then
         retryRolls[rollID] = 0
@@ -814,5 +920,40 @@ M:On("CANCEL_LOOT_ROLL", function(rollID)
     retryRolls[rollID] = nil
 end)
 
-M.OnEnable = function() handledFor = nil; CheckGroup() end
-M.OnDisable = function() busy = false; wipe(autoRolls); wipe(retryRolls) end
+M.OnEnable = function() handledFor = nil; CheckGroup(); if mod.UpdatePassOnLoot then mod.UpdatePassOnLoot() end end
+M.OnDisable = function() busy = false; wipe(autoRolls); wipe(retryRolls); if mod.UpdatePassOnLoot then mod.UpdatePassOnLoot() end end
+
+---------------------------------------------------------------------------
+-- The game's "Pass on Loot" (opt out of loot) while in a group, except on
+-- the leader. MMT only switches it off again if it switched it on.
+---------------------------------------------------------------------------
+function mod.UpdatePassOnLoot()
+    local GetOptOut = GetOptOutOfLoot or (C_PartyInfo and C_PartyInfo.GetOptOutOfLoot)
+    local SetOptOut = SetOptOutOfLoot or (C_PartyInfo and C_PartyInfo.SetOptOutOfLoot)
+    if not (GetOptOut and SetOptOut) then return end
+    M.store.optOutSet = M.store.optOutSet or false
+    local cfg = M.db
+    local want = M.enabled and cfg.optOut and IsInGroup() and not mod.KeepsRolls()
+    local now = GetOptOut() and true or false
+    if want and not now then
+        pcall(SetOptOut, true)
+        M.store.optOutSet = true
+        M:Debug("Pass on Loot on")
+        if cfg.report then MMT.Print("Pass on Loot is on (this character isn't the %s).", cfg.passExcept == "FTL" and "FTL leader" or "group leader") end
+    elseif not want and now and M.store.optOutSet then
+        pcall(SetOptOut, false)
+        M.store.optOutSet = false
+        M:Debug("Pass on Loot off")
+        if cfg.report then MMT.Print("Pass on Loot is off.") end
+    elseif not now then
+        M.store.optOutSet = false   -- switched off elsewhere (e.g. by hand)
+    end
+end
+
+local function UpdateSoon() C_Timer.After(0.5, mod.UpdatePassOnLoot) end
+M:On("GROUP_ROSTER_UPDATE", UpdateSoon)
+M:On("PARTY_LEADER_CHANGED", UpdateSoon)
+M:On("PLAYER_ENTERING_WORLD", UpdateSoon)
+M:Listen("FTL_LEADER", UpdateSoon)
+-- a changed setting applies at once
+MMT.OnRefresh(function() if M.db and MMT.ready then mod.UpdatePassOnLoot() end end)
