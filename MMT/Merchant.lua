@@ -119,7 +119,8 @@ local function Repair()
 end
 
 ---------------------------------------------------------------------------
--- Buy list: { itemID, name, count } bought up to count
+-- Buy list: { itemID, name, count, who } bought up to count (who: only that
+-- character, nil = every character)
 ---------------------------------------------------------------------------
 local function MerchantItem(i)
     if C_MerchantFrame and C_MerchantFrame.GetItemInfo then
@@ -143,6 +144,8 @@ local function BuyList()
     local bought = {}
     for _, entry in ipairs(m.buyList or {}) do
         local id, want = entry.itemID, entry.count or 0
+        -- an item for one character is bought only there
+        if entry.who and entry.who ~= "" and not ns.IsSelf(entry.who) then id = nil end
         local need = id and (want - ItemCount(id)) or 0
         if need > 0 then
             for i = 1, (GetMerchantNumItems and GetMerchantNumItems() or 0) do

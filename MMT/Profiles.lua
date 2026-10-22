@@ -79,6 +79,16 @@ ns.defaults = {
         hideOutside = false,     -- also replace names in Blizzard frames, chat and tooltips
     },
 
+    -- room warnings (Warnings.lua): shown on the leader's client
+    warn = {
+        bags        = true,   -- bags almost full
+        bagsAt      = 2,      -- ... at this many free slots or fewer
+        quests      = true,   -- quest log almost full
+        questsAt    = 3,      -- ... at this many free quest slots or fewer
+        raidWarning = true,
+        sound       = false,
+    },
+
     -- crowd control check (CC.lua)
     cc = {
         enabled     = true,   -- report when a team character can't move
@@ -107,7 +117,7 @@ ns.defaults = {
     gossip   = { vendor = true, taxi = true, dialog = true },
     merchant = { sellGrey = true, repair = true, guildRepair = false, report = true, tellLeader = true, moneyFormat = "text",
                  sellRole = "", neverRole = "",          -- sell list / never-sell list (role names)
-                 buy = false, buyList = {} },            -- buy list: { itemID, name, count }
+                 buy = false, buyList = {} },            -- buy list: { itemID, name, count, who }
     mail     = { enabled = true, goldTo = "", keepGold = 100 },     -- mailbox button: role items to the team, gold above keepGold
     gbank    = { enabled = true, role = "", tab = 1, gold = false, keepGold = 100 },   -- guild bank button
     -- automations

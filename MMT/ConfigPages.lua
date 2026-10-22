@@ -633,6 +633,20 @@ ns.RegisterPage("alerts", "Alerts", function(page)
     local gfd, sfd = Opt("xp", "followCombatDelay")
     L:Slider("Check after combat (seconds)", 1, 30, 1, gfd, sfd)
 
+    L:Header("Bags and quest log")
+    L:Note("Warns the leader (FTL leader, or the group leader) when a character runs out of room.")
+    local gwb, swb = Opt("warn", "bags")
+    L:Check("Bags almost full", gwb, swb, "Once when a character gets down to the free slots below, and once more when its bags are full.")
+    local gwba, swba = Opt("warn", "bagsAt")
+    L:Slider("At free bag slots", 0, 10, 1, gwba, swba)
+    local gwq, swq = Opt("warn", "quests")
+    L:Check("Quest log almost full", gwq, swq, "Once when a character has only the free quest slots below left, and once more when its quest log is full.")
+    local gwqa, swqa = Opt("warn", "questsAt")
+    L:Slider("At free quest slots", 0, 10, 1, gwqa, swqa)
+    local gwr, swr = Opt("warn", "raidWarning")
+    L:Check("Show as raid warning", gwr, swr, "Besides the chat line.")
+    L:Check("Play sound", Opt("warn", "sound"))
+
     local R = UI.Column(page, COL2_X, 0, COL_W)
     R:Header("Crowd control")
     R:Note("Warns when a team character can't move: stunned, feared, incapacitated or rooted. The XP window marks the row orange with the time left.")
@@ -975,7 +989,13 @@ ns.RegisterPage("trade", "Trade / Mail / Vendor", function(page)
     R:Header("Buy list")
     local gby, sby = Opt("merchant", "buy")
     R:Check("Buy up to the count at vendors", gby, sby,
-        "At a vendor that sells them, the items below are bought until you carry the count (gold only). Each character buys for itself.")
+        "At a vendor that sells them, the items below are bought until you carry the count (gold only). Each character buys for itself, or only the character chosen for the item.")
+    local buyFor = ""
+    local function BuyerChoices()
+        local l = { { value = "", text = "Every character" } }
+        for _, key in ipairs(ns.SortedMembers()) do l[#l + 1] = { value = key, text = ns.ShownName(key) } end
+        return l
+    end
     local function BuyList() ns.db.merchant.buyList = ns.db.merchant.buyList or {} return ns.db.merchant.buyList end
     local list = List(page, COL_W, 4, 20, function(parent, i)
         local row = CreateFrame("Frame", nil, parent)
@@ -995,10 +1015,12 @@ ns.RegisterPage("trade", "Trade / Mail / Vendor", function(page)
         return row
     end, function(row, entry, index)
         row.index = index
-        row.name:SetText(entry.name or ("item " .. tostring(entry.itemID)))
+        local who = entry.who and entry.who ~= "" and ns.ShownName(entry.who)
+        row.name:SetText((entry.name or ("item " .. tostring(entry.itemID))) .. (who and ("  |cff999999" .. who .. "|r") or ""))
         row.count:SetText(tostring(entry.count))
     end)
     R:Add(list, 4 * 20 + 4)
+    R:Cycle("Buy on", BuyerChoices, function() return buyFor end, function(v) buyFor = v end)
     local buyStatus
     local countBox
     local itemBox = UI.EditBox(page, COL_W - 96, "Shift-click an item", function(text, box)
@@ -1008,15 +1030,18 @@ ns.RegisterPage("trade", "Trade / Mail / Vendor", function(page)
         if n <= 0 then buyStatus.Show_("Enter how many to carry.", true) return end
         local entries = BuyList()
         for _, e in ipairs(entries) do
-            if e.itemID == rule.itemID then e.count = n; box:SetText(""); page.OnRefresh(); return end
+            if e.itemID == rule.itemID then
+                e.count, e.who = n, buyFor ~= "" and buyFor or nil
+                box:SetText(""); page.OnRefresh(); return
+            end
         end
-        entries[#entries + 1] = { itemID = rule.itemID, name = rule.name, count = n }
+        entries[#entries + 1] = { itemID = rule.itemID, name = rule.name, count = n, who = buyFor ~= "" and buyFor or nil }
         box:SetText("")
         box:ClearFocus()
         page.OnRefresh()
     end)
     UI.AcceptItemLinks(itemBox)
-    UI.Tooltip(itemBox, "Add to the buy list", "Click into the field, then shift-click an item (bags, vendor, chat link) or type its ID. Enter the count beside it, then Add.")
+    UI.Tooltip(itemBox, "Add to the buy list", "Click into the field, then shift-click an item (bags, vendor, chat link) or type its ID. Enter the count beside it, then Add. \"Buy on\" above picks the character that buys it. Adding an item again changes its count and character.")
     R:Add(itemBox, 0)
     countBox = UI.EditBox(page, 40, "20", function() itemBox:GetScript("OnEnterPressed")(itemBox) end)
     countBox:SetNumeric(true)

@@ -39,6 +39,7 @@ local MODULE_CODE = [[
 ## Author: YourName
 ## X-Repository: https://github.com/you/your-repo
 ## Dependencies: MMT
+## DefaultState: disabled
 ## X-MMT-Module: 1
 ## X-MMT-Title: Example
 
@@ -104,7 +105,7 @@ end
 -- MMT.UI (widgets), MMT.Listen("PROFILE_CHANGED", fn)
 ]]
 
-local COMM_TEXT = "Every client runs its own MMT. Everything is sent through one queue in the core, which keeps to the game's limits (about 10 messages per prefix, then 1 per second, on group and guild channels) and sends throttled messages again. Give important messages priority \"ALERT\", large ones \"BULK\" (default \"NORMAL\"). Long texts: MMT.SendLong splits them and the other side gets the whole text. Only messages from characters in this client's team are passed on. Keep single messages under 250 bytes and start them with your own tag. Leader tag (FTL): MMT.SendToLeader reaches only the FTL leader; scope \"FOLLOWERS\" reaches everybody but the leader. Each client checks against the leader it knows. MMT.SendAlert(msg) sends to the leader first, then to everybody else. Taken: XP, XP2, BYE, PING, PONG, SYNC, SYNCHI, SYNCACK, EQREQ, EQD, EQS, QNQ, QNA, LH, LHGO, LHC, QTREQ, QTS, QTD, QTAB, FOL, CC, TAXI, NOTE, MOUNT, DISMOUNT, DEATH, RELEASE, REVIVE, MPT, FTL, FTLM, and the tag prefixes @L: and @F:."
+local COMM_TEXT = "Every client runs its own MMT. Everything is sent through one queue in the core, which keeps to the game's limits (about 10 messages per prefix, then 1 per second, on group and guild channels) and sends throttled messages again. Give important messages priority \"ALERT\", large ones \"BULK\" (default \"NORMAL\"). Long texts: MMT.SendLong splits them and the other side gets the whole text. Only messages from characters in this client's team are passed on. Keep single messages under 250 bytes and start them with your own tag. Leader tag (FTL): MMT.SendToLeader reaches only the FTL leader; scope \"FOLLOWERS\" reaches everybody but the leader. Each client checks against the leader it knows. MMT.SendAlert(msg) sends to the leader first, then to everybody else. Taken: XP, XP2, BYE, PING, PONG, SYNC, SYNCHI, SYNCACK, EQREQ, EQD, EQS, QNQ, QNA, LH, LHGO, LHC, QTREQ, QTS, QTD, QTAB, FOL, CC, TAXI, NOTE (also NOTE:WARN), MOUNT, DISMOUNT, DEATH, RELEASE, REVIVE, IBS, IBA, IBU, IBC, RMQ, RMA, MPT, FTL, FTLM, and the tag prefixes @L: and @F:."
 
 local COMM_CODE = [[
 -- send to the whole team (true = only members that are online);

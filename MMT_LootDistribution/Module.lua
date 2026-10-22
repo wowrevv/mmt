@@ -41,6 +41,8 @@ local M = MMT.NewModule({
         looter        = "LEADER",  -- master looter / group receiver: "LEADER" or a team key
         byRoles       = true,
         roleMode      = "ALL",     -- Group Loot when several members have the role: ALL | ORDER | RR
+        multiRole     = "FILL",    -- Master Loot when several members have the role: FILL | RR
+        noRoom        = "LEAVE",   -- no role member has room: LEAVE | RR (next with room) | SELF
         reserve       = 2,         -- free bag slots every member keeps
         unassigned    = "LEAVE",   -- items no role wants: LEAVE | SELF | RR | GREED | NEED | PASS
         rrNotice      = true,      -- chat line when an item without rule goes round robin
@@ -313,6 +315,101 @@ end
 -- the plan for one item: returns key, candidateIndex, reason, isRR
 -- planned[key]: items already planned for that member in this loot window
 local NextRoundRobin
+---------------------------------------------------------------------------
+-- Room on a stack: a full bag can still take a stackable item that fits onto
+-- a stack the character carries (that needs no free slot). The master
+-- looter asks the team (RMQ:<id>:<itemID>x<qty>;...) and every client
+-- answers per item (RMA:<id>:<1|0...>); its own bags it checks itself.
+---------------------------------------------------------------------------
+local stackRoom = {}   -- [teamKey] = { [itemID] = true } for the open loot window
+
+local function MaxStack(id)
+    local stack = select(8, MMT.ItemInfo(id))
+    return stack or 1
+end
+
+-- can this character put qty of the item onto its stacks?
+function mod.OwnStackRoom(id, qty)
+    local max = MaxStack(id)
+    if max <= 1 then return false end
+    local room = 0
+    for bag = 0, MMT.BAGS do
+        for slot = 1, (C_Container.GetContainerNumSlots(bag) or 0) do
+            local info = C_Container.GetContainerItemInfo(bag, slot)
+            if info and info.itemID == id and (info.stackCount or 1) < max then
+                room = room + max - (info.stackCount or 1)
+            end
+        end
+    end
+    return room >= (qty or 1)
+end
+
+local function CanStack(key, link)
+    local id = tonumber(tostring(link):match("item:(%d+)"))
+    if not id then return false end
+    if MMT.IsSelf(key) then return mod.OwnStackRoom(id, stackRoom.qty and stackRoom.qty[id] or 1) end
+    return stackRoom[key] and stackRoom[key][id] or false
+end
+
+-- room for the item: more free slots than the reserve, or a stack to add to
+local function HasRoom(key, link, planned, reserve)
+    local free = Free(key, planned)
+    if free and free > reserve then return true, free end
+    return CanStack(key, link), free
+end
+
+-- answer the master looter
+M:Listen("TEAM_MESSAGE", function(key, sender, text)
+    local ask, list = text:match("^RMQ:(%d+):(.+)$")
+    if not ask then return end
+    local bits = {}
+    for id, qty in list:gmatch("(%d+)x(%d+)") do
+        bits[#bits + 1] = mod.OwnStackRoom(tonumber(id), tonumber(qty)) and "1" or "0"
+    end
+    MMT.SendAddon(("RMA:%s:%s"):format(ask, table.concat(bits)), "WHISPER", sender, "ALERT")
+end)
+
+local roomAsks = {}
+M:Listen("TEAM_MESSAGE", function(key, sender, text)
+    local ask, bits = text:match("^RMA:(%d+):([01]*)$")
+    local a = ask and roomAsks[ask]
+    if not a then return end
+    stackRoom[key] = {}
+    for i, item in ipairs(a.items) do
+        if bits:sub(i, i) == "1" then stackRoom[key][item.id] = true end
+    end
+    M:Debug("stack room from %s: %s", MMT.Repr(key), bits)
+    for _, k in ipairs(a.waitFor) do if not stackRoom[k] then return end end
+    a.finish()
+end)
+
+-- asks the team about stackable items when someone is short of free slots
+local function AskStackRoom(items, done)
+    wipe(stackRoom)
+    stackRoom.qty = {}
+    for _, item in ipairs(items) do stackRoom.qty[item.id] = item.qty end
+    local waitFor = {}
+    for _, key in ipairs(MMT.SortedMembers()) do
+        if not MMT.IsSelf(key) and MMT.IsOnline(key) then
+            local free = FreeSlots(key)
+            if free == nil or free <= M.db.reserve then waitFor[#waitFor + 1] = key end
+        end
+    end
+    if #items == 0 or #waitFor == 0 then done() return end
+    local ask = tostring(math.random(100000, 999999))
+    local finished = false
+    roomAsks[ask] = { items = items, waitFor = waitFor, finish = function()
+        if finished then return end
+        finished = true
+        roomAsks[ask] = nil
+        done()
+    end }
+    local parts = {}
+    for _, item in ipairs(items) do parts[#parts + 1] = item.id .. "x" .. item.qty end
+    MMT.SendToTeam(("RMQ:%s:%s"):format(ask, table.concat(parts, ";")), true, "ALERT")
+    C_Timer.After(0.8, function() if roomAsks[ask] then roomAsks[ask].finish() end end)
+end
+
 local function Choose(slot, link, planned, isQuest)
     local cfg = M.db
     -- quest items only need one free slot, whatever the reserve
@@ -320,10 +417,22 @@ local function Choose(slot, link, planned, isQuest)
     local keys, roles = MMT.MembersForItem(link)
     -- "give by roles" off: items a role wants stay for manual assignment
     if not cfg.byRoles and #keys > 0 then return nil, nil, "roles off" end
-    for _, key in ipairs(keys) do
-        local free = Free(key, planned)
+    -- several members want it: in team order (fill up), or in turns from the
+    -- one after the last receiver of this group (round robin)
+    local order = keys
+    local group = table.concat(keys, "|")
+    if cfg.multiRole == "RR" and #keys > 1 then
+        M.store.roleRR = M.store.roleRR or {}
+        local last, start = M.store.roleRR[group], 1
+        for i, key in ipairs(keys) do if key == last then start = i + 1 end end
+        order = {}
+        for n = 0, #keys - 1 do order[#order + 1] = keys[(start - 1 + n) % #keys + 1] end
+    end
+    for _, key in ipairs(order) do
         local index = CandidateIndex(slot, key)
-        if index and free and free > reserve then
+        local room, free = HasRoom(key, link, planned, reserve)
+        if index and room then
+            if cfg.multiRole == "RR" and #keys > 1 then M.store.roleRR[group] = key end
             return key, index, roles[key]
         end
         M:Debug("skip %s for %s: candidate=%s free=%s reserve=%d", MMT.Repr(key), link,
@@ -331,14 +440,24 @@ local function Choose(slot, link, planned, isQuest)
     end
     if #keys == 0 and cfg.unassigned == "SELF" then
         local me = MMT.PlayerFull()
-        local free = Free(me, planned)
         local index = CandidateIndex(slot, me)
-        if index and free and free > reserve then return me, index, nil end
+        if index and HasRoom(me, link, planned, reserve) then return me, index, nil end
     end
     if #keys == 0 and cfg.unassigned == "RR" and not isQuest then
         local key, index = NextRoundRobin(slot, link, planned)
         if key then return key, index, "round robin", true end
         return nil, nil, "no rule, nobody with room"
+    end
+    -- a role wants it but none of its members has room
+    if #keys > 0 and not isQuest then
+        if cfg.noRoom == "RR" then
+            local key, index = NextRoundRobin(slot, link, planned)
+            if key then return key, index, "role members full, round robin" end
+        elseif cfg.noRoom == "SELF" then
+            local me = MMT.PlayerFull()
+            local index = CandidateIndex(slot, me)
+            if index and HasRoom(me, link, planned, reserve) then return me, index, "role members full" end
+        end
     end
     return nil, nil, (#keys == 0) and "no role" or "no space"
 end
@@ -494,22 +613,21 @@ local function NextQuestReceiver(slot, link, planned, needOf)
     local start = 1
     local last = M.store.questRR[itemID]
     for i, key in ipairs(order) do if key == last then start = i + 1 end end
-    for _, minFree in ipairs({ 1, 0 }) do
-        for _, wanted in ipairs({ "Y", "U" }) do
-            for n = 0, #order - 1 do
-                local key = order[(start - 1 + n) % #order + 1]
-                local need = needOf(key, name)
-                local index = CandidateIndex(slot, key)
-                local free = Free(key, planned)
-                if need == wanted and index and (free == nil or free >= minFree) and not IsBlocked(link, key) then
-                    M.store.questRR[itemID] = key
-                    M:Debug("quest %s -> %s (need %s, free=%s)", link, MMT.Repr(key), need, tostring(free))
-                    return key, index
-                end
-                if minFree == 1 then
-                    M:Debug("quest %s skip %s: need=%s candidate=%s free=%s blocked=%s", link, MMT.Repr(key),
-                        tostring(need), tostring(index), tostring(free), tostring(IsBlocked(link, key)))
-                end
+    -- passes: needs it + has a free slot, no objective + free slot, then the
+    -- same with full bags (the item may still fit on a stack they carry).
+    -- The "keep free bag slots" reserve doesn't count for quest items.
+    for _, pass in ipairs({ { "Y", true }, { "U", true }, { "Y", false }, { "U", false } }) do
+        local wanted, needRoom = pass[1], pass[2]
+        for n = 0, #order - 1 do
+            local key = order[(start - 1 + n) % #order + 1]
+            local need = needOf(key, name)
+            local index = CandidateIndex(slot, key)
+            local free = Free(key, planned)
+            local room = free == nil or free > 0 or CanStack(key, link)
+            if need == wanted and index and (room or not needRoom) and not IsBlocked(link, key) then
+                M.store.questRR[itemID] = key
+                M:Debug("quest %s -> %s (need %s)", link, MMT.Repr(key), need)
+                return key, index
             end
         end
     end
@@ -527,8 +645,8 @@ NextRoundRobin = function(slot, link, planned)
     for n = 0, #order - 1 do
         local key = order[(start - 1 + n) % #order + 1]
         local index = CandidateIndex(slot, key)
-        local free = Free(key, planned)
-        if index and free and free > M.db.reserve and not IsBlocked(link, key) then
+        local room, free = HasRoom(key, link, planned, M.db.reserve)
+        if index and room and not IsBlocked(link, key) then
             M.store.lootRR = key
             M:Debug("no rule %s -> %s (round robin)", link, MMT.Repr(key))
             return key, index
@@ -588,6 +706,11 @@ local function Plan(needOf)
                     if not MMT.IsSelf(key) then NoteGiven(key) end
                 else
                     M:Debug("left %s in the loot window (%s)", link, tostring(role))
+                    if cfg.report and role == "no space" then
+                        MMT.Print("%s |cffffd100stays in the loot window: the members of its role have no room.|r", link)
+                    elseif cfg.report and role == "no rule, nobody with room" then
+                        MMT.Print("%s |cffffd100stays in the loot window: no team member has room for it.|r", link)
+                    end
                 end
             end
         end
@@ -643,11 +766,25 @@ local function Distribute()
             if name and not seen[name] then seen[name] = true; names[#names + 1] = name end
         end
     end
-    if #names == 0 then
-        Plan(function() return "U" end)
-    else
-        AskQuestNeed(names, function(needOf) if busy then Plan(needOf) end end)
+    -- stackable items: who can still put them onto a stack (full bags)
+    local stackables, seenID = {}, {}
+    for slot = 1, GetNumLootItems() do
+        local link = GetLootSlotLink(slot)
+        local id = link and tonumber(link:match("item:(%d+)"))
+        local _, _, qty = GetLootSlotInfo(slot)
+        if id and not seenID[id] and MaxStack(id) > 1 then
+            seenID[id] = true
+            stackables[#stackables + 1] = { id = id, qty = qty or 1 }
+        end
     end
+    AskStackRoom(stackables, function()
+        if not busy then return end
+        if #names == 0 then
+            Plan(function() return "U" end)
+        else
+            AskQuestNeed(names, function(needOf) if busy then Plan(needOf) end end)
+        end
+    end)
 end
 
 M:On("LOOT_OPENED", function(autoLoot)
@@ -709,26 +846,24 @@ function mod.DecideRoleRoll(link, itemID, isBoP)
     local cfg = M.db
     if not cfg.byRoles then return nil end
 
-    -- Explicit item rules ("item") take priority over generic rules ("rule").
-    -- Generic rules only apply to BoP items when cfg.rollBoP is enabled.
-    local tier
+    -- Most specific rule wins (item=4 > group=3 > class=2 > boe/quality=1).
+    -- Generic rules (how < 4) only apply to BoP items when cfg.rollBoP is enabled.
+    local tier = 0
     for _, role in ipairs(MMT.SortedRoleNames()) do
-        local kind = MMT.RoleMatchKind(role, link)
-        if kind == "item" then
-            tier = "item"
-            break
-        elseif kind == "rule" and (not isBoP or cfg.rollBoP) then
-            tier = "rule"
+        local _, how = MMT.RoleWantsItem(role, link)
+        if how > tier and (how == 4 or not isBoP or cfg.rollBoP) then
+            tier = how
         end
     end
-    if not tier then return nil end
+    if tier == 0 then return nil end
 
     local bestAction, bestRole, passRole = {}, {}, {}
     local claimers = {}
     for _, key in ipairs(MMT.SortedMembers()) do
         if IsMemberActive(key) then
             for _, role in ipairs(MMT.MemberRoleList(key)) do
-                if MMT.RoleMatchKind(role, link) == tier then
+                local _, how = MMT.RoleWantsItem(role, link)
+                if how == tier then
                     local r = MMT.RoleRoll(role)
                     if r == "PASS" then
                         passRole[key] = passRole[key] or role

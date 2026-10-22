@@ -4,7 +4,7 @@
 local ADDON, ns = ...
 _G.MMT = ns
 ns.title = "MMT"
-ns.version = "0.9.12"
+ns.version = "0.9.17"
 ns.prefix = "MMT"
 ns.LOGO = "Interface\\AddOns\\MMT\\Media\\Logo"   -- the MMT mark (Media/Logo.tga)
 ns.ICON = "Interface\\AddOns\\MMT\\Media\\Icon"   -- the mark on a dark tile (Media/Icon.tga)
@@ -65,6 +65,18 @@ function ns.Print(fmt, ...)
 end
 
 -- Debug lines go into a log (/mmt debug dump) and, optionally, to chat.
+-- The same alert about the same character at most once every few seconds
+-- (raid warnings, sounds and chat lines of follow, crowd control, room warnings).
+local ALERT_COOLDOWN = 5
+local lastAlert = {}
+function ns.AlertAllowed(kind, key)
+    local id = tostring(kind) .. ":" .. tostring(key)
+    local now = GetTime()
+    if lastAlert[id] and now - lastAlert[id] < ALERT_COOLDOWN then return false end
+    lastAlert[id] = now
+    return true
+end
+
 function ns.Debug(fmt, ...)
     if not (MMTDB and MMTDB.debug) then return end
     local ok, msg = pcall(string.format, fmt, ...)

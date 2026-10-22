@@ -96,6 +96,7 @@ local function WarnHere(key)
 end
 
 local function Warn(key, c)
+    if not ns.AlertAllowed("cc:" .. c.kind, key) then return end
     local cfg = ns.db.cc
     local left = ns.CCLeft(c)
     local msg = ("%s is %s%s"):format(ns.FullDisplay(key), ns.CCLabel(c.kind), left and left > 0 and (" (" .. left .. " s)") or "")

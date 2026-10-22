@@ -1,0 +1,11 @@
+<Bindings>
+    <!-- One key per slot: uses the item on this client (with key broadcasting: on every client). -->
+    <Binding name="CLICK MMTItemBarButton1:LeftButton" header="MMT_ITEMBAR" category="ADDONS"/>
+    <Binding name="CLICK MMTItemBarButton2:LeftButton" category="ADDONS"/>
+    <Binding name="CLICK MMTItemBarButton3:LeftButton" category="ADDONS"/>
+    <Binding name="CLICK MMTItemBarButton4:LeftButton" category="ADDONS"/>
+    <Binding name="CLICK MMTItemBarButton5:LeftButton" category="ADDONS"/>
+    <Binding name="CLICK MMTItemBarButton6:LeftButton" category="ADDONS"/>
+    <Binding name="CLICK MMTItemBarButton7:LeftButton" category="ADDONS"/>
+    <Binding name="CLICK MMTItemBarButton8:LeftButton" category="ADDONS"/>
+</Bindings>

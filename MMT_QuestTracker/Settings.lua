@@ -153,6 +153,9 @@ M.Page = function(_, page)
     local gst, sst = Opt("announceStarter")
     L2:Check("Announce looted items that start a quest", gst, sst,
         "Posts \"Looted [Item] - it starts a quest!\" in party chat when an item that starts a quest lands in your bags (not if that quest is already in your log). Not in a group: only shown to you.")
+    local gmr, smr = Opt("markRewards")
+    L2:Check("Mark the best rewards", gmr, smr,
+        "On quest reward choices: a coin on the reward that sells for the most, a green arrow on every reward that is an upgrade for this character (it can wear it and its item level is higher than what it wears in that slot). Choosing stays manual.")
     L2:Note("Hold Shift while an NPC page opens to keep that page manual (Core > Automations).")
 
     local R2 = UI.Column(Au, COL2_X, 0, COL_W)

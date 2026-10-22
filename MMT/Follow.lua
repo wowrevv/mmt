@@ -49,6 +49,7 @@ function ns.FollowInfo(key) return ns.follow[key] end
 local RAID_WARNING_SOUND = (SOUNDKIT and SOUNDKIT.RAID_WARNING) or 8959
 
 local function Warn(key)
+    if not ns.AlertAllowed("follow", key) then return end
     local x = ns.db.xp
     local msg = ("%s stopped following"):format(ns.FullDisplay(key))
     if x.followWarn then
@@ -108,7 +109,7 @@ local own = { following = false, target = nil, combatBreak = false }
 function ns.IsFollowing() return own.following end
 
 function ns.OwnFollowField()
-    return own.following and "1" or "0"
+    return (own.following or own.pendingStop) and "1" or "0"
 end
 
 local function Send(msg) if ns.SendAlert then ns.SendAlert(msg) end end   -- leader first
@@ -116,21 +117,36 @@ local function Send(msg) if ns.SendAlert then ns.SendAlert(msg) end end   -- lea
 
 ns.On("AUTOFOLLOW_BEGIN", function(name)
     if ns.IsSecret(name) then name = nil end
+    own.stopSeq = (own.stopSeq or 0) + 1   -- a pending stop (see below) is void
+    own.pendingStop = false
     own.following, own.target, own.combatBreak = true, name, false
     Send("FOL:1:" .. (name or ""))
     local me = ns.PlayerFull()
     if me then Started(me, name) end
 end)
 
+-- A stop only counts if follow isn't taken up again within STOP_GRACE
+-- seconds: following the same character again (or a new /follow) ends the
+-- old follow for a split second first.
+local STOP_GRACE = 0.5
+
 ns.On("AUTOFOLLOW_END", function()
     if not own.following then return end
     own.following = false
     local why = ""
     if UnitOnTaxi and ns.Safe(UnitOnTaxi, "player") then why = "t"
-    elseif InCombat() then why = "c"; own.combatBreak = true end
-    Send("FOL:0:" .. why)
-    local me = ns.PlayerFull()
-    if me then Stopped(me, why) end
+    elseif InCombat() then why = "c" end
+    own.stopSeq = (own.stopSeq or 0) + 1
+    local seq = own.stopSeq
+    own.pendingStop = true
+    C_Timer.After(STOP_GRACE, function()
+        if seq ~= own.stopSeq or own.following then return end   -- following again
+        own.pendingStop = false
+        if why == "c" then own.combatBreak = true end
+        Send("FOL:0:" .. why)
+        local me = ns.PlayerFull()
+        if me then Stopped(me, why) end
+    end)
 end)
 
 -- combat over and still not following again: now it counts as a break

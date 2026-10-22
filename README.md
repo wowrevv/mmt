@@ -5,7 +5,7 @@
 # MMT - Manage My Team
 
 A lean multiboxing assistant for World of Warcraft: Forever (interface 16001).
-Version 0.9.12: core addon (MMT) plus optional modules (MMT_*).
+Version 0.9.17: core addon (MMT) plus optional modules (MMT_*).
 To install, download the repository (Code > Download ZIP) and copy the four `MMT*` folders.
 
 ## Install
@@ -19,7 +19,9 @@ Saved data from MMT 0.1.x is converted automatically.
 ## Core and modules
 - **Core** (`MMT`, always on): Team, Roles, XP Window, Alerts, FTL, Automations, Trade / Mail / Vendor, Profiles, plus team
   communication, profile sync and debug tools.
-- **Modules** (`MMT_<Name>`, optional): separate addons that build on the core. They
+- **Modules** (`MMT_<Name>`, optional): separate addons that build on the core. Loot
+  Distribution and Quest Tracker are on by default, the others off (`## DefaultState:
+  disabled` in their TOC) until switched on in /mmt > Modules or the AddOns list. They
   appear in the game's AddOns list and under MODULES in /mmt, where switched-off
   modules are greyed out. Switching one off in /mmt stops it right away and disables
   it for the next login; switching one on starts it right away, or after a reload if
@@ -75,7 +77,9 @@ Saved data from MMT 0.1.x is converted automatically.
   sound. Options: check /follow of team, warning, sound, ignore breaks during combat
   (then nothing shows during a fight, on either character's side; it only counts if the
   character still isn't following some seconds after combat; default 5, adjustable).
-  Flight paths don't count as a break.
+  Flight paths don't count as a break, nor does following again within half a second
+  (a new /follow ends the old one for a split second). The same alert about the same
+  character (follow, crowd control, bags and quest log) shows at most once every 5 s.
   "Crowd control": every client reports when its character can't move: stunned, feared or
   charmed, incapacitated (polymorph, sap, sleep) or rooted (each can be switched off;
   effects shorter than 2 seconds are ignored, adjustable). The row turns orange and
@@ -84,6 +88,9 @@ Saved data from MMT 0.1.x is converted automatically.
   client (the character you play); with no leader known, from every client.
   Follow, crowd control and layer hop messages go to the FTL leader first (whispered,
   highest priority) and then to the rest of the team.
+  "Bags and quest log": the leader (FTL leader, or the group leader) gets a chat line,
+  and optionally a raid warning and sound, when a character gets down to a set number
+  of free bag slots (default 2) or free quest slots (default 3), and again when full.
 - **FTL** (Focusless, Targetless, Leaderless): macros that always target the character
   you are controlling right now, like `/follow {FTL}` or `/assist {FTL}`. Write them on
   the FTL page; MMT turns them into account macros ("FTL Follow" and "FTL Assist" by
@@ -101,6 +108,18 @@ Saved data from MMT 0.1.x is converted automatically.
   Sending the macros to the team: characters on the same account with the same profile
   already have them; for other accounts use Profiles > Sync to team (`/mmt sync`). Each
   character still needs the macros on an action bar once.
+- **Item Bar** (module, off by default): item slots that are the same on every team
+  member (2 to 8, horizontal or vertical, scale 80-200%). Drop an item from your bags on
+  a slot and it appears there on every character, also on those that don't have it;
+  Ctrl-click removes it everywhere. The tooltip shows every character's count ("Name -
+  bag: X / bank: Y", privacy names; optionally the guild bank). Left-click uses the item
+  here; right-click uses it here and on the team: items without a spell (bags, clams,
+  equipment) are used on the others too, items with a spell (potions, food, quest items)
+  light up there, because WoW lets an addon use those only on a click or key press on
+  that client. Every slot has a key binding (Esc > Options > Keybindings > AddOns >
+  "MMT - Item Bar"): with key broadcasting one key press uses the item everywhere.
+  Small buttons: refresh (sync the bar to the team) and clear (both can be hidden).
+  Shift + drag moves the bar, Shift-right-click opens its settings.
 - **Item Compare** (module): set a key, hover an item and press it to see what every team
   member wears in that slot (both slots for rings, trinkets and one-hand weapons),
   with the stat and item level changes if they equipped the hovered item.
@@ -109,12 +128,21 @@ Saved data from MMT 0.1.x is converted automatically.
   outsiders join": while a player who isn't in your team list is in the group, the method
   is Group Loot, and the chosen method again when they leave. As master
   looter it gives items at or above the threshold to the team member whose roles want
-  them: first in team order with more free bag slots than the reserve. Bind on Pickup
+  them. When roles of different members want the same item, the most specific rule
+  wins: an exact item, then an item group ("Cloth"), then an item class, then Bind on
+  Equip or a quality ("white items"); this also applies to trades and mail. "Several
+  have the role": fill up by team order (the first in team order with
+  more free bag slots than the reserve gets everything, then the next) or round robin
+  (in turns). "Role members have no room": leave for manual, give to the next team
+  member with room (round robin), or to the master looter. Bind on Pickup
   items are never given out: they are posted in group chat for manual assignment.
   "Auto-Round Robin quest items": quest items go to the team in turns (team order).
   The master looter first asks the team who still needs the item (each client checks
   its quest log) and skips characters whose objective is complete. If the game still
   refuses a hand-out, that character is skipped for that item for 10 minutes.
+  A character with full bags still counts as having room for a stackable item that fits
+  onto a stack it carries (the master looter asks the team). Items nobody has room for
+  stay in the loot window with a chat note.
   The "keep free bag slots" reserve doesn't apply to quest items: they are given even
   into the last free slot, and with full bags they are still tried (they may stack).
   Items are recognised as quest items by the loot window or by their item class.
@@ -143,7 +171,9 @@ Saved data from MMT 0.1.x is converted automatically.
   alignment, outline, and font, size and colour for each of the four levels.
   Quest automation lives here too: accept from NPCs and from the group, turn in, skip
   grey quests, announce "ready for turn-in", share new quests automatically, announce
-  quests that can't be shared, announce looted items that start a quest ("Looted
+  quests that can't be shared, mark the reward choices (a coin on the one that sells
+  for the most, a green arrow on upgrades: wearable and of a higher item level than
+  what is worn in that slot), announce looted items that start a quest ("Looted
   [Item] - it starts a quest!", on by default), and abandon a quest on the whole team (asks first:
   "Do you want to abort this quest on your entire team?"). The quest settings of
   Core > Automations are copied over once.
@@ -174,7 +204,8 @@ Saved data from MMT 0.1.x is converted automatically.
     quality, Bind on Equip, item group). Items of the sell list are sold too; the
     never-sell list wins, greys included.
   - Buy list: items and a count; at a vendor that sells them, each character buys up to
-    that count (gold only).
+    that count (gold only). "Buy on" picks one character for an item; then only that
+    character buys it.
   - Mail: a "Mail to team" button beside the mail window sends every item another team
     member's role wants to that member (items your own role wants stay), 12 per mail,
     and optionally the gold above an amount to one team member.

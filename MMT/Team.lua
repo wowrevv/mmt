@@ -407,50 +407,60 @@ function ns.RuleMatches(rule, itemID, name, quality, classID, bindType, subClass
     return false
 end
 
--- Returns "item" if an explicit item rule matches, "rule" if a category/quality/BoE
--- rule matches, or nil. Explicit item rules take priority over generic rules.
-function ns.RoleMatchKind(roleName, item)
+-- How specific a matching rule is: an exact item beats an item group, a
+-- group beats an item class, and those beat Bind on Equip or a quality.
+local SPECIFIC = { item = 4, group = 3, class = 2, boe = 1, quality = 1 }
+
+-- Does any rule of the role match the item (link or ID)? Second value: the
+-- most specific matching rule (SPECIFIC), 0 if none matches.
+function ns.RoleWantsItem(roleName, item)
     local role = ns.db.roles[roleName]
-    if not role then return nil end
+    if not role then return false, 0 end
     local itemID = tonumber(tostring(item):match("item:(%d+)") or item)
     local name, _, quality, _, _, _, _, _, _, _, _, classID, subClassID, bindType = ns.ItemInfo(item)
     if not classID then _, classID, subClassID = ns.ItemCategory(item) end
-    local generic = false
+    local best = 0
     for _, rule in ipairs(role.rules) do
         if ns.RuleMatches(rule, itemID, name, quality, classID, bindType, subClassID) then
-            if rule.type == "item" then return "item" end
-            generic = true
+            best = math.max(best, SPECIFIC[rule.type] or 1)
         end
     end
-    return generic and "rule" or nil
+    return best > 0, best
 end
 
--- Does any rule of the role match the item (link or ID)?
-function ns.RoleWantsItem(roleName, item)
-    return ns.RoleMatchKind(roleName, item) ~= nil
+-- Returns "item" if an explicit item rule matches, "rule" if a category/quality/BoE
+-- rule matches, or nil. Explicit item rules take priority over generic rules.
+function ns.RoleMatchKind(roleName, item)
+    local _, best = ns.RoleWantsItem(roleName, item)
+    if best == 4 then return "item" elseif best > 0 then return "rule" end
+    return nil
 end
 
--- Team members whose roles want the item, in team order; plus the matching roles.
--- Roles set to Pass are excluded here; explicit item rules take priority over generic rules.
+-- Team members whose roles want the item, plus the matching roles. The
+-- members with the most specific rule come first ("Cloth" before "white
+-- items"), team order among equals. Roles set to Pass are excluded.
 function ns.MembersForItem(item)
-    local tier
-    for _, role in ipairs(ns.SortedRoleNames()) do
-        local kind = ns.RoleMatchKind(role, item)
-        if kind == "item" then tier = "item" break elseif kind == "rule" then tier = "rule" end
-    end
-    if not tier then return {}, {}, nil end
-    local keys, roles = {}, {}
-    for _, key in ipairs(ns.SortedMembers()) do
-        local pick, passed
+    local keys, roles, score, pos = {}, {}, {}, {}
+    for i, key in ipairs(ns.SortedMembers()) do
+        local best, bestRole, passBest = 0, nil, 0
         for _, role in ipairs(ns.MemberRoleList(key)) do
-            if ns.RoleMatchKind(role, item) == tier then
-                if ns.RoleRoll(role) == "PASS" then passed = true else pick = pick or role end
+            local wants, how = ns.RoleWantsItem(role, item)
+            if wants then
+                if ns.RoleRoll(role) == "PASS" then
+                    passBest = math.max(passBest, how)
+                elseif how > best then
+                    best, bestRole = how, role
+                end
             end
         end
-        if pick and not passed then
+        if best > 0 and best > passBest then
             keys[#keys + 1] = key
-            roles[key] = pick
+            roles[key], score[key], pos[key] = bestRole, best, i
         end
     end
-    return keys, roles, tier
+    table.sort(keys, function(a, b)
+        if score[a] ~= score[b] then return score[a] > score[b] end
+        return pos[a] < pos[b]
+    end)
+    return keys, roles
 end

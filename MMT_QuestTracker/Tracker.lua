@@ -576,12 +576,32 @@ local function BlizzardTrackers()
     return { _G.ObjectiveTrackerFrame, _G.QuestWatchFrame, _G.WatchFrame }
 end
 
+-- The game puts its tracker back into its own container when it shows up
+-- (e.g. with the first quest of a new character): hide it again then.
+local hooked = {}
+local function Rehide()
+    C_Timer.After(0, function()
+        if M.enabled and M.db.hideBlizzard then mod.UpdateBlizzardTracker() end
+    end)
+end
+local function HookTracker(frame)
+    if hooked[frame] then return end
+    hooked[frame] = true
+    if frame.HookScript then frame:HookScript("OnShow", Rehide) end
+    if hooksecurefunc then
+        hooksecurefunc(frame, "SetParent", function(self, parent)
+            if parent ~= hiddenParent and M.enabled and M.db.hideBlizzard then Rehide() end
+        end)
+    end
+end
+
 function mod.UpdateBlizzardTracker()
     local hide = M.enabled and M.db.hideBlizzard
     if InCombatLockdown() then waitingForCombat = true return end -- its quest item buttons are protected
     waitingForCombat = false
     for _, frame in ipairs(BlizzardTrackers()) do
         if frame and frame.SetParent then
+            HookTracker(frame)
             local parent = frame:GetParent()
             if hide and parent ~= hiddenParent then
                 originalParent[frame] = parent
@@ -596,6 +616,9 @@ end
 
 -- these run whether or not the module is on: switching it off must restore the tracker
 MMT.On("PLAYER_REGEN_ENABLED", function() if waitingForCombat then mod.UpdateBlizzardTracker() end end)
+-- a new quest can make the game show its tracker again
+MMT.On("QUEST_ACCEPTED", Rehide)
+MMT.On("QUEST_WATCH_LIST_CHANGED", Rehide)
 MMT.On("ADDON_LOADED", function(name)
     if name == "Blizzard_ObjectiveTracker" or name == "Blizzard_QuestWatch" then mod.UpdateBlizzardTracker() end
 end)
